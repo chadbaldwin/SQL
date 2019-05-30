@@ -25,7 +25,7 @@ BEGIN
 			@ANDSearch2			VARCHAR(200)	= NULL,
 			@WholeOnly			BIT				= 0,
 			@SearchObjContents	BIT				= 1,
-			@FindReferences		BIT				= 1,
+			@FindReferences		BIT				= 0,
 			@Debug				BIT				= 0
 	--*/
 	
@@ -376,6 +376,7 @@ BEGIN
 						, cr.SVNPath
 					FROM #ObjectContentsResults cr
 						JOIN #Objects o ON o.ID = cr.ObjectID
+					WHERE cr.ObjectName NOT LIKE @Search
 					ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName
 				END
 			END
