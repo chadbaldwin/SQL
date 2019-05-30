@@ -259,7 +259,7 @@ BEGIN
 		-- Get items that match search criteria
 		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
 		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
-			, 'Whole Match'
+			, 'Whole'
 		FROM #Objects o
 		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
 			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch  OR @ANDWholeSearch  IS NULL)
@@ -268,7 +268,7 @@ BEGIN
 		IF (@WholeOnly = 0)
 			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
 			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
-				, 'Partial Word Match'
+				, 'Partial'
 			FROM #Objects o
 			WHERE    o.[Definition] LIKE @PartSearch
 				AND (o.[Definition] LIKE @ANDPartSearch  OR @ANDPartSearch  IS NULL)
@@ -300,7 +300,7 @@ BEGIN
 		INTO #ObjectContentsResults
 		FROM (
 			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality
-				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole Match', 1, 0) DESC) --If a whole match is found, prefer that over partial match
+				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole', 1, 0) DESC) --If a whole match is found, prefer that over partial match
 			FROM #ObjectContents
 		) o
 		WHERE o.RN = 1
@@ -353,7 +353,7 @@ BEGIN
 								FROM #JobStepContents
 								WHERE '#'+StepCode+'#' LIKE ss.SecondarySearch
 							) x
-							WHERE r.MatchQuality = 'Whole Match'
+							WHERE r.MatchQuality = 'Whole'
 						) x
 
 					--Output with references
