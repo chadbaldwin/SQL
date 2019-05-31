@@ -6,124 +6,179 @@ GO
 -- Description:	Searches Proc names, proc contents (whole word and partial), Table names, Column Names and Job Step code
 -- =============================================
 CREATE PROCEDURE dbo.usp_SchemaSearch (
-	@Search				VARCHAR(200),
-	@DBName				VARCHAR(50)		= NULL,
-	@ANDSearch			VARCHAR(200)	= NULL,
-	@ANDSearch2			VARCHAR(200)	= NULL,
-	@WholeOnly			BIT				= 0,
-	@SearchObjContents	BIT				= 1,
-	@FindReferences		BIT				= 1,
-	@Debug				BIT				= 0,
+	@Search					VARCHAR(200),
+	@DBName					VARCHAR(50)		= NULL,
+	@ANDSearch				VARCHAR(200)	= NULL,
+	@ANDSearch2				VARCHAR(200)	= NULL,
+	@WholeOnly				BIT				= 0,
+	@SearchObjContents		BIT				= 1,
+	@FindReferences			BIT				= 1,
+	@Debug					BIT				= 0,
+	--Beta feature -- Allow user to pass in a list of include/exclude filter lists for the DB -- For now this is in addition to the DBName filter...that can be the simple param, these can be for advanced users I guess?
+	@DBIncludeFilterList	VARCHAR(200)	= NULL,
+	@DBExcludeFilterList	VARCHAR(200)	= NULL,
 	--Beta feature -- Still figuring out how to make this intuitive to a new user of this tool
-	@CacheObjects		BIT				= 0,
-	@CacheOutputSchema	BIT				= 0
+	@CacheObjects			BIT				= 0,
+	@CacheOutputSchema		BIT				= 0
 )
 AS
 BEGIN
 	/*
 		DECLARE
-			@Search				VARCHAR(200)	= 'TestTest',
-			@DBName				VARCHAR(50)		= NULL,
-			@ANDSearch			VARCHAR(200)	= NULL,
-			@ANDSearch2			VARCHAR(200)	= NULL,
-			@WholeOnly			BIT				= 0,
-			@SearchObjContents	BIT				= 1,
-			@FindReferences		BIT				= 0,
-			@Debug				BIT				= 0,
-			@CacheObjects		BIT				= 0,
-			@CacheOutputSchema	BIT				= 0
+			@Search					VARCHAR(200)	= 'TestTest',
+			@DBName					VARCHAR(50)		= NULL,
+			@ANDSearch				VARCHAR(200)	= NULL,
+			@ANDSearch2				VARCHAR(200)	= NULL,
+			@WholeOnly				BIT				= 0,
+			@SearchObjContents		BIT				= 1,
+			@FindReferences			BIT				= 0,
+			@Debug					BIT				= 0,
+			@DBIncludeFilterList	VARCHAR(200)	= NULL,
+			@DBExcludeFilterList	VARCHAR(200)	= '%[_]Old,%[_]Syn'
+			@CacheObjects			BIT				= 0,
+			@CacheOutputSchema		BIT				= 0,
 	--*/
 	
 	SET NOCOUNT ON
-
-	--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
-	IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
-	BEGIN
-		SELECT String
-		FROM (VALUES  (1, 'Run the below script prior to running this proc.')
-					, (2, 'After SchemaSearch finishes running you can')
-					, (3, 'query the results. If you run SchemaSearch')
-					, (4, 'again, it will re-use the existing data in')
-					, (5, 'the table as a cache. If a database is missing,')
-					, (6, 'it will be added to the table.')
-		) x(ID,String)
-		ORDER BY x.ID
-
-		SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
-						+ CHAR(13)+CHAR(10)
-						+ 'CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)'
-
-		RETURN
-	END
-
-	--If caching was used and then later turned off...we want to clear the table if the user forgets to drop it
-	IF (@CacheObjects = 0 AND OBJECT_ID('tempdb..#Objects') IS NOT NULL)
-		TRUNCATE TABLE #Objects
-
-	IF (@Search = '')
-		THROW 51000, 'Must Provide a Search Criteria', 1;
-
-	SET @DBName		= NULLIF(@DBName,'')
-	SET @Search		= REPLACE(@Search					,'_','[_]')
-	SET @ANDSearch	= REPLACE(NULLIF(@ANDSearch,'')		,'_','[_]')
-	SET @ANDSearch2	= REPLACE(NULLIF(@ANDSearch2,'')	,'_','[_]')
-
-	SELECT 'SearchCriteria: ', CONCAT('''', @Search, '''', ' AND ''' + @ANDSearch + '''', ' AND ''' + @ANDSearch2 + '''')
-
-	--Populate table with a list of all databases user has access to
-	DECLARE @DBs TABLE (ID INT IDENTITY(1,1) NOT NULL, DBName VARCHAR(100) NOT NULL, HasAccess BIT NOT NULL, DBOnline BIT NOT NULL)
-	INSERT INTO @DBs
-	SELECT DBName	= [name]
-		, HasAccess	= HAS_PERMS_BY_NAME([name], 'DATABASE', 'ANY')
-		, DBOnline	= IIF([state] = 0, 1, 0) --IIF([status] & 512 <> 512, 1, 0)
-	FROM [master].sys.databases
-	WHERE database_id > 4	--Filter out system databases
-		AND ([name] = @DBName OR @DBName IS NULL)
-	ORDER BY HasAccess DESC, DBOnline DESC
-
-	IF (@@ROWCOUNT > 50)
-		RAISERROR('That''s a lot of databases....Might not be a good idea to run this',0,1) WITH NOWAIT;
-
-	--Output list of Databases and Access/Online info
-	SELECT DBName, HasAccess, DBOnline FROM @DBs ORDER BY DBName
-
-	IF EXISTS(SELECT * FROM @DBs db WHERE db.HasAccess = 0)
-		SELECT 'WARNING: NOT ALL DATABASES CAN BE SCANNED DUE TO PERMISSIONS'
-
-	IF EXISTS(SELECT * FROM @DBs db WHERE db.DBOnline = 0)
-		SELECT 'WARNING: NOT ALL DATABASES CAN BE SCANNED DUE TO BEING OFFLINE'
-
-	DECLARE	@PartSearch			VARCHAR(512)	=			 '%' + @Search     + '%',
-			@ANDPartSearch		VARCHAR(512)	=			 '%' + @ANDSearch  + '%',
-			@ANDPartSearch2		VARCHAR(512)	=			 '%' + @ANDSearch2 + '%',
-			@WholeSearch		VARCHAR(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
-			@ANDWholeSearch		VARCHAR(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
-			@ANDWholeSearch2	VARCHAR(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
-			@CRLF				CHAR(2)			= CHAR(13)+CHAR(10)
-
-	IF OBJECT_ID('tempdb..#ObjNames')		IS NOT NULL DROP TABLE #ObjNames		--SELECT * FROM #ObjNames
-	CREATE TABLE #ObjNames		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL)
-
-	IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents	--SELECT * FROM #ObjectContents
-	CREATE TABLE #ObjectContents(ID INT IDENTITY(1,1) NOT NULL, ObjectID INT NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, MatchQuality VARCHAR(100) NOT NULL)
-
-	--We only want to re-create this table if it's missing and caching is disabled
-	IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
-	BEGIN
-		IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
-		CREATE TABLE #Objects	(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
-	END
-
-	IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns			--SELECT * FROM #Columns
-	CREATE TABLE #Columns		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, Table_Name SYSNAME NOT NULL, Column_Name SYSNAME NOT NULL, Data_Type NVARCHAR(128) NOT NULL, Character_Maximum_Length INT NULL, Numeric_Precision INT NULL, Numeric_Scale INT NULL, DateTime_Precision INT NULL)
-
-	IF OBJECT_ID('tempdb..#SQL')			IS NOT NULL DROP TABLE #SQL				--SELECT * FROM #SQL
-	CREATE TABLE #SQL			(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SQLCode VARCHAR(MAX) NOT NULL)
-
-	RAISERROR('',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
+	-- Object chaching precheck
+	------------------------------------------------------------------------------
+	BEGIN
+		--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
+		IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
+		BEGIN
+			SELECT String
+			FROM (VALUES  (1, 'Run the below script prior to running this proc.')
+						, (2, 'After SchemaSearch finishes running you can')
+						, (3, 'query the results. If you run SchemaSearch')
+						, (4, 'again, it will re-use the existing data in')
+						, (5, 'the table as a cache. If a database is missing,')
+						, (6, 'it will be added to the table.')
+			) x(ID,String)
+			ORDER BY x.ID
+
+			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
+							+ CHAR(13)+CHAR(10)
+							+ 'CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)'
+
+			RETURN
+		END
+
+		--If caching was used and then later turned off...we want to clear the table if the user forgets to drop it
+		IF (@CacheObjects = 0 AND OBJECT_ID('tempdb..#Objects') IS NOT NULL)
+			TRUNCATE TABLE #Objects
+	END
+	------------------------------------------------------------------------------
+	
+	------------------------------------------------------------------------------
+	-- Parameter prep / check
+	------------------------------------------------------------------------------
+	BEGIN
+		IF (@Search = '')
+			THROW 51000, 'Must Provide a Search Criteria', 1;
+
+		SET @DBName					= REPLACE(NULLIF(@DBName,'')		,'_','[_]')
+		SET @Search					= REPLACE(@Search					,'_','[_]')
+		SET @ANDSearch				= REPLACE(NULLIF(@ANDSearch,'')		,'_','[_]')
+		SET @ANDSearch2				= REPLACE(NULLIF(@ANDSearch2,'')	,'_','[_]')
+		SET @DBIncludeFilterList	= NULLIF(@DBIncludeFilterList,'')
+		SET @DBExcludeFilterList	= NULLIF(@DBExcludeFilterList, '')
+
+		DECLARE	@PartSearch			VARCHAR(512)	=			 '%' + @Search     + '%',
+				@ANDPartSearch		VARCHAR(512)	=			 '%' + @ANDSearch  + '%',
+				@ANDPartSearch2		VARCHAR(512)	=			 '%' + @ANDSearch2 + '%',
+				@WholeSearch		VARCHAR(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
+				@ANDWholeSearch		VARCHAR(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
+				@ANDWholeSearch2	VARCHAR(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
+				@CRLF				CHAR(2)			= CHAR(13)+CHAR(10)
+
+		SELECT 'SearchCriteria: ', CONCAT('''', @Search, '''', ' AND ''' + @ANDSearch + '''', ' AND ''' + @ANDSearch2 + '''')
+	END
+	------------------------------------------------------------------------------
+	
+	------------------------------------------------------------------------------
+	-- DB Filtering
+	------------------------------------------------------------------------------
+	BEGIN
+		--Parse DB Filter lists
+		DECLARE @Delimiter NVARCHAR(255) = ',';
+		IF OBJECT_ID('tempdb..#DBFilters') IS NOT NULL DROP TABLE #DBFilters; --SELECT * FROM #DBFilters
+		WITH
+			E1(N) AS (SELECT x.y FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) x(y)),
+			E2(N) AS (SELECT 1 FROM E1 a CROSS APPLY E1 b CROSS APPLY E1 c CROSS APPLY E1 d),
+			cteTally(N)		AS (SELECT 0 UNION ALL SELECT ROW_NUMBER() OVER (ORDER BY 1/0) FROM E2)
+		SELECT x.DBFilter, FilterText = SUBSTRING(x.List, cteStart.N1, COALESCE(NULLIF(CHARINDEX(@Delimiter, x.List, cteStart.N1),0) - cteStart.N1, 8000))
+		INTO #DBFilters
+		FROM (SELECT DBFilter = 'Include', List = @DBIncludeFilterList UNION SELECT 'Exclude', @DBExcludeFilterList) x
+			CROSS APPLY (SELECT N1 = t.N + 1 FROM cteTally t WHERE SUBSTRING(x.List, t.N, 1) = @Delimiter OR t.N = 0) cteStart
+		------------------------------------------------------------------------------
+	
+		------------------------------------------------------------------------------
+		--Populate table with a list of all databases user has access to
+		DECLARE @DBs TABLE (ID INT IDENTITY(1,1) NOT NULL, DBName VARCHAR(100) NOT NULL, HasAccess BIT NOT NULL, DBOnline BIT NOT NULL)
+		INSERT INTO @DBs
+		SELECT DBName	= d.[name]
+			, HasAccess	= HAS_PERMS_BY_NAME(d.[name], 'DATABASE', 'ANY')
+			, DBOnline	= IIF(d.[state] = 0, 1, 0) --IIF([status] & 512 <> 512, 1, 0)
+		FROM [master].sys.databases d
+		WHERE d.database_id > 4	--Filter out system databases
+			AND (d.[name] = @DBName OR @DBName IS NULL)
+			AND (
+				    (    EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Include') OR @DBIncludeFilterList IS NULL)
+				AND (NOT EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Exclude') OR @DBExcludeFilterList IS NULL)
+			)
+		ORDER BY HasAccess DESC, DBOnline DESC
+
+		IF ((SELECT COUNT(*) FROM @DBs WHERE HasAccess = 1 AND DBOnline = 1) > 50)
+		BEGIN
+			RAISERROR('That''s a lot of databases....Might not be a good idea to run this',0,1) WITH NOWAIT;
+			RETURN
+		END
+
+		--Output list of Databases and Access/Online info
+		SELECT DBName, HasAccess, DBOnline FROM @DBs ORDER BY DBName
+
+		IF EXISTS(SELECT * FROM @DBs db WHERE db.HasAccess = 0)
+			SELECT 'WARNING: NOT ALL DATABASES CAN BE SCANNED DUE TO PERMISSIONS'
+
+		IF EXISTS(SELECT * FROM @DBs db WHERE db.DBOnline = 0)
+			SELECT 'WARNING: NOT ALL DATABASES CAN BE SCANNED DUE TO BEING OFFLINE'
+	END
+	------------------------------------------------------------------------------
+	
+	------------------------------------------------------------------------------
+	-- Temp table prep
+	------------------------------------------------------------------------------
+	BEGIN
+		IF OBJECT_ID('tempdb..#ObjNames')		IS NOT NULL DROP TABLE #ObjNames		--SELECT * FROM #ObjNames
+		CREATE TABLE #ObjNames		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL)
+
+		IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents	--SELECT * FROM #ObjectContents
+		CREATE TABLE #ObjectContents(ID INT IDENTITY(1,1) NOT NULL, ObjectID INT NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, MatchQuality VARCHAR(100) NOT NULL)
+
+		--We only want to re-create this table if it's missing and caching is disabled
+		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
+		BEGIN
+			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
+			CREATE TABLE #Objects	(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
+		END
+
+		IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns			--SELECT * FROM #Columns
+		CREATE TABLE #Columns		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, Table_Name SYSNAME NOT NULL, Column_Name SYSNAME NOT NULL, Data_Type NVARCHAR(128) NOT NULL, Character_Maximum_Length INT NULL, Numeric_Precision INT NULL, Numeric_Scale INT NULL, DateTime_Precision INT NULL)
+
+		IF OBJECT_ID('tempdb..#SQL')			IS NOT NULL DROP TABLE #SQL				--SELECT * FROM #SQL
+		CREATE TABLE #SQL			(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SQLCode VARCHAR(MAX) NOT NULL)
+
+		RAISERROR('',0,1) WITH NOWAIT;
+	END
+	------------------------------------------------------------------------------
+	
+	------------------------------------------------------------------------------
+	-- Job / Job Step searching -- for now, not limiting to DB filters as the contents of the filter doesn't always run within the specified DB for that Step...because people like to be tricky.
+	------------------------------------------------------------------------------
+	BEGIN
 		IF OBJECT_ID('tempdb..#JobStepContents') IS NOT NULL DROP TABLE #JobStepContents --SELECT * FROM #JobStepContents
 		SELECT DBName		= s.[database_name]
 			, JobName		= j.[name]
@@ -152,19 +207,18 @@ BEGIN
 					CROSS APPLY (SELECT NextRunDateTime = CASE WHEN j.[enabled] = 0 THEN NULL WHEN js.next_run_date = 0 THEN CONVERT(DATETIME, '1900-01-01') ELSE CONVERT(DATETIME, CONVERT(CHAR(8), js.next_run_date, 112) + ' ' + x.NextRunTime) END) y
 				WHERE j.job_id = js.job_id
 			) n
-	------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
 	
-	------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
 		IF OBJECT_ID('tempdb..#JobStepNames_Results') IS NOT NULL DROP TABLE #JobStepNames_Results --SELECT * FROM #JobStepNames_Results
 		SELECT DBName, JobName, StepID, StepName, [Enabled], JobID
 			, IsRunning, NextRunDate
 			, StepCode = CONVERT(XML, '<?query --'+@CRLF+StepCode+@CRLF+'--?>')
 		INTO #JobStepNames_Results
-		FROM #JobStepContents
+		FROM #JobStepContents c
 		WHERE (	   (JobName		LIKE @PartSearch AND JobName	LIKE COALESCE(@ANDPartSearch, JobName)	AND JobName		LIKE COALESCE(@ANDPartSearch2, JobName))
 				OR (StepName	LIKE @PartSearch AND StepName	LIKE COALESCE(@ANDPartSearch, StepName)	AND StepName	LIKE COALESCE(@ANDPartSearch2, StepName))
 			)
-			AND (DBName = @DBName OR @DBName IS NULL)
 
 		IF (@@ROWCOUNT > 0)
 		BEGIN
@@ -174,9 +228,9 @@ BEGIN
 		ELSE SELECT 'Job/Step - Names', 'NO RESULTS FOUND'
 
 		RAISERROR('',0,1) WITH NOWAIT;
-	------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
 	
-	------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
 		IF OBJECT_ID('tempdb..#JobStepContents_Results') IS NOT NULL DROP TABLE #JobStepContents_Results --SELECT * FROM #JobStepContents_Results
 		SELECT s.DBName, s.JobName, s.StepID, s.StepName, s.[Enabled], s.JobID
 			, IsRunning, NextRunDate
@@ -186,7 +240,6 @@ BEGIN
 		WHERE s.StepCode LIKE @PartSearch
 			AND (s.StepCode LIKE @ANDPartSearch  OR @ANDPartSearch  IS NULL)
 			AND (s.StepCode LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL)
-			AND (s.DBName = @DBName OR @DBName IS NULL)
 
 		IF (@@ROWCOUNT > 0)
 		BEGIN
@@ -196,9 +249,13 @@ BEGIN
 		ELSE SELECT 'Job step - Contents', 'NO RESULTS FOUND'
 
 		RAISERROR('',0,1) WITH NOWAIT;
+	END
 	------------------------------------------------------------------------------
 
 	------------------------------------------------------------------------------
+	-- DB Looping
+	------------------------------------------------------------------------------
+	BEGIN
 		--Loop through each database to grab objects
 		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb
 		DECLARE @i INT = 1, @SQL VARCHAR(MAX) = '', @DB VARCHAR(100)
@@ -247,9 +304,13 @@ BEGIN
 
 			RAISERROR('',0,1) WITH NOWAIT;
 		END
+	END
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
+	-- Column Name / Object Name Searches
+	------------------------------------------------------------------------------
+	BEGIN
 		IF (EXISTS(SELECT * FROM #Columns))
 		BEGIN
 			SELECT 'Columns (partial matches)'
@@ -270,9 +331,9 @@ BEGIN
 		ELSE SELECT 'Columns', 'NO RESULTS FOUND'
 
 		RAISERROR('',0,1) WITH NOWAIT;
-	------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
 	
-	------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
 		--Covers all objects - Views, Procs, Functions, Triggers, Tables, Constraints
 		IF (EXISTS(SELECT * FROM #ObjNames))
 		BEGIN
@@ -285,8 +346,11 @@ BEGIN
 		ELSE SELECT 'Object - Names', 'NO RESULTS FOUND'
 
 		RAISERROR('',0,1) WITH NOWAIT;
+	END
 	------------------------------------------------------------------------------
 	
+	------------------------------------------------------------------------------
+	-- Object contents searches
 	------------------------------------------------------------------------------
 	IF (@SearchObjContents = 1)
 	BEGIN
@@ -295,6 +359,7 @@ BEGIN
 		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
 			, 'Whole'
 		FROM #Objects o
+			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
 			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch  OR @ANDWholeSearch  IS NULL)
 			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch2 OR @ANDWholeSearch2 IS NULL)
@@ -304,6 +369,7 @@ BEGIN
 			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
 				, 'Partial'
 			FROM #Objects o
+				JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 			WHERE    o.[Definition] LIKE @PartSearch
 				AND (o.[Definition] LIKE @ANDPartSearch  OR @ANDPartSearch  IS NULL)
 				AND (o.[Definition] LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL)
@@ -417,11 +483,10 @@ BEGIN
 			ELSE SELECT 'Object - Contents', 'NO RESULTS FOUND'
 
 			RAISERROR('',0,1) WITH NOWAIT;
-		------------------------------------------------------------------------------
-		
-		------------------------------------------------------------------------------
 	END
-
+	------------------------------------------------------------------------------
+	
+	------------------------------------------------------------------------------
 	IF (@Debug = 1)
 	BEGIN
 		SELECT 'DEBUG'
