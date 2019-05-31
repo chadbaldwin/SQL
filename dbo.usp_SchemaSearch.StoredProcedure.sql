@@ -29,11 +29,14 @@ BEGIN
 			@WholeOnly			BIT				= 0,
 			@SearchObjContents	BIT				= 1,
 			@FindReferences		BIT				= 0,
-			@Debug				BIT				= 0
+			@Debug				BIT				= 0,
+			@CacheObjects		BIT				= 0,
+			@CacheOutputSchema	BIT				= 0
 	--*/
 	
 	SET NOCOUNT ON
 
+	--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
 	IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
 	BEGIN
 		SELECT String
@@ -52,6 +55,10 @@ BEGIN
 
 		RETURN
 	END
+
+	--If caching was used and then later turned off...we want to clear the table if the user forgets to drop it
+	IF (@CacheObjects = 0 AND OBJECT_ID('tempdb..#Objects') IS NOT NULL)
+		TRUNCATE TABLE #Objects
 
 	IF (@Search = '')
 		THROW 51000, 'Must Provide a Search Criteria', 1;
@@ -77,6 +84,7 @@ BEGIN
 	IF (@@ROWCOUNT > 50)
 		RAISERROR('That''s a lot of databases....Might not be a good idea to run this',0,1) WITH NOWAIT;
 
+	--Output list of Databases and Access/Online info
 	SELECT DBName, HasAccess, DBOnline FROM @DBs ORDER BY DBName
 
 	IF EXISTS(SELECT * FROM @DBs db WHERE db.HasAccess = 0)
@@ -99,10 +107,11 @@ BEGIN
 	IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents	--SELECT * FROM #ObjectContents
 	CREATE TABLE #ObjectContents(ID INT IDENTITY(1,1) NOT NULL, ObjectID INT NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, MatchQuality VARCHAR(100) NOT NULL)
 
+	--We only want to re-create this table if it's missing and caching is disabled
 	IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 	BEGIN
-		IF OBJECT_ID('tempdb..#Objects')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
-		CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
+		IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
+		CREATE TABLE #Objects	(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
 	END
 
 	IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns			--SELECT * FROM #Columns
@@ -360,7 +369,7 @@ BEGIN
 						, Ref_Type = x.[Type_Desc]
 					INTO #ObjectReferences
 					FROM #ObjectContentsResults r
-						--TODO: Change mentioned in / called by code to use referening entities dm query as a "whole match" so that it's more accurate as to which instance of the object is being referenced, but contintue to also do string matching as a "partial match"
+						--TODO: Change mentioned in / called by code to use referencing entities dm query as a "whole match" so that it's more accurate as to which instance of the object is being referenced, but contintue to also do string matching as a "partial match"
 						CROSS APPLY (SELECT SecondarySearch = '%EXEC%[^0-9A-Z_]' + REPLACE(r.ObjectName,'_','[_]') + '[^0-9A-Z_]%') ss --Whole search name, preceded by"EXEC" --Not perfect because it can match procs that have same name in multiple databases
 						OUTER APPLY ( --Find all likely called by references, exact matches only -- Can cause left side dups
 							SELECT x.CombName, x.[Type_Desc]
