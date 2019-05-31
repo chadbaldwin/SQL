@@ -13,7 +13,10 @@ CREATE PROCEDURE dbo.usp_SchemaSearch (
 	@WholeOnly			BIT				= 0,
 	@SearchObjContents	BIT				= 1,
 	@FindReferences		BIT				= 1,
-	@Debug				BIT				= 0
+	@Debug				BIT				= 0,
+	--Beta feature -- Still figuring out how to make this intuitive to a new user of this tool
+	@CacheObjects		BIT				= 0,
+	@CacheOutputSchema	BIT				= 0
 )
 AS
 BEGIN
@@ -30,6 +33,25 @@ BEGIN
 	--*/
 	
 	SET NOCOUNT ON
+
+	IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
+	BEGIN
+		SELECT String
+		FROM (VALUES  (1, 'Run the below script prior to running this proc.')
+					, (2, 'After SchemaSearch finishes running you can')
+					, (3, 'query the results. If you run SchemaSearch')
+					, (4, 'again, it will re-use the existing data in')
+					, (5, 'the table as a cache. If a database is missing,')
+					, (6, 'it will be added to the table.')
+		) x(ID,String)
+		ORDER BY x.ID
+
+		SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
+						+ CHAR(13)+CHAR(10)
+						+ 'CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)'
+
+		RETURN
+	END
 
 	IF (@Search = '')
 		THROW 51000, 'Must Provide a Search Criteria', 1;
@@ -77,8 +99,11 @@ BEGIN
 	IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents	--SELECT * FROM #ObjectContents
 	CREATE TABLE #ObjectContents(ID INT IDENTITY(1,1) NOT NULL, ObjectID INT NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, MatchQuality VARCHAR(100) NOT NULL)
 
-	IF OBJECT_ID('tempdb..#Objects')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
-	CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
+	IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
+	BEGIN
+		IF OBJECT_ID('tempdb..#Objects')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
+		CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
+	END
 
 	IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns			--SELECT * FROM #Columns
 	CREATE TABLE #Columns		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, Table_Name SYSNAME NOT NULL, Column_Name SYSNAME NOT NULL, Data_Type NVARCHAR(128) NOT NULL, Character_Maximum_Length INT NULL, Numeric_Precision INT NULL, Numeric_Scale INT NULL, DateTime_Precision INT NULL)
@@ -178,7 +203,7 @@ BEGIN
 			SELECT @SQL = '
 				USE ' + @DB
 
-			IF (@SearchObjContents = 1)
+			IF (@SearchObjContents = 1 AND NOT EXISTS (SELECT * FROM #Objects WHERE [Database] = @DB))
 			SELECT @SQL	= @SQL + '
 				INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Definition])
 				SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], m.[definition]
