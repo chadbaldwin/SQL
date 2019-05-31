@@ -1,9 +1,42 @@
+------------------------------------------------------------------------------
+-- Usage:
+------------------------------------------------------------------------------
+/*
+	EXEC dbo.usp_SchemaSearch
+	--Basic options
+		@Search					= 'SearchCriteria',		-- Your search criteria
+		@DBName					= NULL,					-- Simple Database filter...Limits everything to only this database
+	--Additional options
+		@SearchObjContents		= 1,					-- Whether or not you want to search the actual code of a proc, function, view, etc
+		@ANDSearch				= NULL,					-- Second search criteria
+		@ANDSearch2				= NULL,					-- Third search criteria
+		@WholeOnly				= 1,					-- Exclude partial matches...for example, a search of "Entity" will not match with "EntityOpportunity"
+	--Advanced/Beta features:
+		@FindReferences			= 0,					--Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
+		@CacheObjects			= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
+		@CacheOutputSchema		= 0,						-- Dependent on @CacheOutputSchema = 1...This provides the DDL query for setting up the cache tables outside of the proc
+		@DBIncludeFilterList	= 'Test%',				--Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
+		@DBExcludeFilterList	= '%[_]Old,%[_]Backup'	--Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
+
+	/*
+	Notes: 
+		- Database filters are not applied to searching Jobs / Job Steps since the contents of a job step doesn't always match its assigned DB.
+		- SVNPath field - If you want to use this field, you will need to set up an environment variable %SVNPath% that points to your DB SVN folder
+			- In the future I may make this a variable that is passed in instead.
+	*/
+*/
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
 IF OBJECT_ID('dbo.usp_SchemaSearch') IS NOT NULL DROP PROCEDURE dbo.usp_SchemaSearch;
 GO
 -- =============================================
 -- Author:		Chad Baldwin
 -- Create date: 2015-04-13
 -- Description:	Searches Proc names, proc contents (whole word and partial), Table names, Column Names and Job Step code
+
+-- Notes:
+--	- Need to figure out how to search calculated columns
 -- =============================================
 CREATE PROCEDURE dbo.usp_SchemaSearch (
 	@Search					VARCHAR(200),
@@ -31,19 +64,19 @@ BEGIN
 			@ANDSearch2				VARCHAR(200)	= NULL,
 			@WholeOnly				BIT				= 0,
 			@SearchObjContents		BIT				= 1,
-			@FindReferences			BIT				= 0,
+			@FindReferences			BIT				= 1,
 			@Debug					BIT				= 0,
-			@DBIncludeFilterList	VARCHAR(200)	= NULL,
-			@DBExcludeFilterList	VARCHAR(200)	= '%[_]Old,%[_]Syn'
+			@DBIncludeFilterList	VARCHAR(200)	= 'Test%',
+			@DBExcludeFilterList	VARCHAR(200)	= '%[_]Old,%[_]Syn',
 			@CacheObjects			BIT				= 0,
-			@CacheOutputSchema		BIT				= 0,
+			@CacheOutputSchema		BIT				= 0
 	--*/
 	
 	SET NOCOUNT ON
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
-	-- Object chaching precheck
+	RAISERROR('Object chaching precheck',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
 		--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
@@ -73,7 +106,7 @@ BEGIN
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
-	-- Parameter prep / check
+	RAISERROR('Parameter prep / check',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
 		IF (@Search = '')
@@ -99,7 +132,7 @@ BEGIN
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
-	-- DB Filtering
+	RAISERROR('DB Filtering',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
 		--Parse DB Filter lists
@@ -129,7 +162,7 @@ BEGIN
 				    (    EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Include') OR @DBIncludeFilterList IS NULL)
 				AND (NOT EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Exclude') OR @DBExcludeFilterList IS NULL)
 			)
-		ORDER BY HasAccess DESC, DBOnline DESC
+		ORDER BY HasAccess DESC, DBOnline DESC, DBName
 
 		IF ((SELECT COUNT(*) FROM @DBs WHERE HasAccess = 1 AND DBOnline = 1) > 50)
 		BEGIN
@@ -149,7 +182,7 @@ BEGIN
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
-	-- Temp table prep
+	RAISERROR('Temp table prep',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
 		IF OBJECT_ID('tempdb..#ObjNames')		IS NOT NULL DROP TABLE #ObjNames		--SELECT * FROM #ObjNames
@@ -170,13 +203,11 @@ BEGIN
 
 		IF OBJECT_ID('tempdb..#SQL')			IS NOT NULL DROP TABLE #SQL				--SELECT * FROM #SQL
 		CREATE TABLE #SQL			(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SQLCode VARCHAR(MAX) NOT NULL)
-
-		RAISERROR('',0,1) WITH NOWAIT;
 	END
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
-	-- Job / Job Step searching -- for now, not limiting to DB filters as the contents of the filter doesn't always run within the specified DB for that Step...because people like to be tricky.
+	RAISERROR('Job / Job Step searching',0,1) WITH NOWAIT; -- for now, not limiting to DB filters as the contents of the filter doesn't always run within the specified DB for that Step...because people like to be tricky.
 	------------------------------------------------------------------------------
 	BEGIN
 		IF OBJECT_ID('tempdb..#JobStepContents') IS NOT NULL DROP TABLE #JobStepContents --SELECT * FROM #JobStepContents
@@ -203,7 +234,7 @@ BEGIN
 			CROSS APPLY (
 				SELECT Next_Run_Date = MAX(y.NextRunDateTime)
 				FROM msdb.dbo.sysjobschedules js WITH(NOLOCK)
-					CROSS APPLY (SELECT NextRunTime	= STUFF(STUFF(RIGHT('000000' + CONVERT(VARCHAR(8), js.next_run_time		), 6), 5, 0, ':'), 3, 0, ':')) x
+					CROSS APPLY (SELECT NextRunTime	= STUFF(STUFF(RIGHT('000000' + CONVERT(VARCHAR(8), js.next_run_time), 6), 5, 0, ':'), 3, 0, ':')) x
 					CROSS APPLY (SELECT NextRunDateTime = CASE WHEN j.[enabled] = 0 THEN NULL WHEN js.next_run_date = 0 THEN CONVERT(DATETIME, '1900-01-01') ELSE CONVERT(DATETIME, CONVERT(CHAR(8), js.next_run_date, 112) + ' ' + x.NextRunTime) END) y
 				WHERE j.job_id = js.job_id
 			) n
@@ -226,8 +257,6 @@ BEGIN
 			SELECT DBName, JobName, StepID, StepName, [Enabled], StepCode, JobID, IsRunning, NextRunDate FROM #JobStepNames_Results ORDER BY JobName, StepID
 		END
 		ELSE SELECT 'Job/Step - Names', 'NO RESULTS FOUND'
-
-		RAISERROR('',0,1) WITH NOWAIT;
 		------------------------------------------------------------------------------
 	
 		------------------------------------------------------------------------------
@@ -247,13 +276,11 @@ BEGIN
 			SELECT DBName, JobName, StepID, StepName, [Enabled], StepCode, JobID, IsRunning, NextRunDate FROM #JobStepContents_Results ORDER BY JobName, StepID
 		END
 		ELSE SELECT 'Job step - Contents', 'NO RESULTS FOUND'
-
-		RAISERROR('',0,1) WITH NOWAIT;
 	END
 	------------------------------------------------------------------------------
 
 	------------------------------------------------------------------------------
-	-- DB Looping
+	RAISERROR('DB Looping',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
 		--Loop through each database to grab objects
@@ -264,7 +291,7 @@ BEGIN
 			SELECT @DB = DBName FROM @DBs WHERE ID = @i AND HasAccess = 1 AND DBOnline = 1
 			IF @@ROWCOUNT = 0 BREAK;
 
-			PRINT @DB
+			RAISERROR('	%s',0,1,@DB) WITH NOWAIT;
 
 			SELECT @SQL = '
 				USE ' + @DB
@@ -301,14 +328,13 @@ BEGIN
 
 			INSERT INTO #SQL ([Database], SQLCode) SELECT @DB, @SQL
 			SELECT @i += 1
-
-			RAISERROR('',0,1) WITH NOWAIT;
 		END
+		RAISERROR('',0,1) WITH NOWAIT;
 	END
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
-	-- Column Name / Object Name Searches
+	RAISERROR('Column Name / Object Name Searches',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
 		IF (EXISTS(SELECT * FROM #Columns))
@@ -329,8 +355,6 @@ BEGIN
 			ORDER BY [Database], SchemaName, Table_Name, Column_Name
 		END
 		ELSE SELECT 'Columns', 'NO RESULTS FOUND'
-
-		RAISERROR('',0,1) WITH NOWAIT;
 		------------------------------------------------------------------------------
 	
 		------------------------------------------------------------------------------
@@ -344,8 +368,6 @@ BEGIN
 			ORDER BY [Database], SchemaName, [Type_Desc], ObjectName
 		END
 		ELSE SELECT 'Object - Names', 'NO RESULTS FOUND'
-
-		RAISERROR('',0,1) WITH NOWAIT;
 	END
 	------------------------------------------------------------------------------
 	
@@ -354,7 +376,8 @@ BEGIN
 	------------------------------------------------------------------------------
 	IF (@SearchObjContents = 1)
 	BEGIN
-		-- Get items that match search criteria
+		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
+
 		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
 		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
 			, 'Whole'
@@ -374,7 +397,7 @@ BEGIN
 				AND (o.[Definition] LIKE @ANDPartSearch  OR @ANDPartSearch  IS NULL)
 				AND (o.[Definition] LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL)
 
-		-- Dedup search criteria - Whole matches get priority - Add some calculated fields
+		RAISERROR('	Dedup search results',0,1) WITH NOWAIT; -- Whole matches get priority - Add some calculated fields
 		IF OBJECT_ID('tempdb..#ObjectContentsResults') IS NOT NULL DROP TABLE #ObjectContentsResults --SELECT * FROM #ObjectContentsResults
 		SELECT ID = IDENTITY(INT,1,1), o.ObjectID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.MatchQuality
 			, QuickScript = CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
@@ -427,6 +450,8 @@ BEGIN
 
 				IF (@FindReferences = 1)
 				BEGIN
+					RAISERROR('	Finding result references',0,1) WITH NOWAIT;
+
 					-- Get references for search matches
 					IF OBJECT_ID('tempdb..#ObjectReferences') IS NOT NULL DROP TABLE #ObjectReferences --SELECT * FROM #ObjectReferences
 					SELECT r.ID
@@ -443,15 +468,17 @@ BEGIN
 								--Procs/Triggers
 								SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc]
 								FROM #Objects o
-								WHERE '#'+[Definition]+'#' LIKE ss.SecondarySearch
+								WHERE '#'+[Definition]+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
+					--			WHERE CHARINDEX(r.ObjectName, o.[Definition]) > 0
 									AND o.ObjectName <> r.ObjectName							--Dont include self
 									AND r.[Type_Desc] = 'SQL_STORED_PROCEDURE'					--Reference
 									AND o.[Type_Desc] IN ('SQL_STORED_PROCEDURE','SQL_TRIGGER')	--Referenced By
 								UNION
 								--Jobs
-								SELECT CombName = CONCAT(JobName,' - ',StepID,') ', COALESCE(NULLIF(StepName,''),'''''')), 'JOB_STEP'
-								FROM #JobStepContents
-								WHERE '#'+StepCode+'#' LIKE ss.SecondarySearch
+								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP'
+								FROM #JobStepContents jsc
+								WHERE '#'+StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
+					--			WHERE CHARINDEX(r.ObjectName, StepCode) > 0
 							) x
 							WHERE r.MatchQuality = 'Whole'
 						) x
@@ -481,8 +508,6 @@ BEGIN
 				END
 			END
 			ELSE SELECT 'Object - Contents', 'NO RESULTS FOUND'
-
-			RAISERROR('',0,1) WITH NOWAIT;
 	END
 	------------------------------------------------------------------------------
 	
@@ -492,5 +517,7 @@ BEGIN
 		SELECT 'DEBUG'
 		SELECT [Database], SQLCode FROM #SQL
 	END
+
+	RAISERROR('Done',0,1) WITH NOWAIT;
 END
 GO
