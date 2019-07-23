@@ -33,10 +33,11 @@ GO
 -- =============================================
 -- Author:		Chad Baldwin
 -- Create date: 2015-04-13
--- Description:	Searches Proc names, proc contents (whole word and partial), Table names, Column Names and Job Step code
+-- Description:	Searches object names, object contents (whole word and partial), Table names, Column Names, Job Step code, etc
+--				Basically...it's SQL Search, but better :)
 
 -- Notes:
---	- Need to figure out how to search calculated columns
+	-- TODO - Need to figure out how to search calculated columns
 -- =============================================
 CREATE PROCEDURE dbo.usp_SchemaSearch (
 	@Search					VARCHAR(200),
@@ -56,6 +57,9 @@ CREATE PROCEDURE dbo.usp_SchemaSearch (
 )
 AS
 BEGIN
+	SET NOCOUNT ON
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
 	/*
 		DECLARE
 			@Search					VARCHAR(200)	= 'TestTest',
@@ -66,13 +70,12 @@ BEGIN
 			@SearchObjContents		BIT				= 1,
 			@FindReferences			BIT				= 1,
 			@Debug					BIT				= 0,
-			@DBIncludeFilterList	VARCHAR(200)	= 'Test%',
-			@DBExcludeFilterList	VARCHAR(200)	= '%[_]Old,%[_]Syn',
+			@DBIncludeFilterList	VARCHAR(200)	= NULL,
+			@DBExcludeFilterList	VARCHAR(200)	= NULL,
 			@CacheObjects			BIT				= 0,
 			@CacheOutputSchema		BIT				= 0
 	--*/
 	
-	SET NOCOUNT ON
 	------------------------------------------------------------------------------
 	
 	------------------------------------------------------------------------------
@@ -88,14 +91,13 @@ BEGIN
 						, (3, 'query the results. If you run SchemaSearch')
 						, (4, 'again, it will re-use the existing data in')
 						, (5, 'the table as a cache. If a database is missing,')
-						, (6, 'it will be added to the table.')
+						, (6, 'it will be added (but not updated) to the table.')
 			) x(ID,String)
 			ORDER BY x.ID
 
 			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
 							+ CHAR(13)+CHAR(10)
-							+ 'CREATE TABLE #Objects		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)'
-
+							+ 'CREATE TABLE #Objects (ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)'
 			RETURN
 		END
 
@@ -142,7 +144,7 @@ BEGIN
 			E1(N) AS (SELECT x.y FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) x(y)),
 			E2(N) AS (SELECT 1 FROM E1 a CROSS APPLY E1 b CROSS APPLY E1 c CROSS APPLY E1 d),
 			cteTally(N)		AS (SELECT 0 UNION ALL SELECT ROW_NUMBER() OVER (ORDER BY 1/0) FROM E2)
-		SELECT x.DBFilter, FilterText = SUBSTRING(x.List, cteStart.N1, COALESCE(NULLIF(CHARINDEX(@Delimiter, x.List, cteStart.N1),0) - cteStart.N1, 8000))
+		SELECT x.DBFilter, FilterText = LTRIM(RTRIM(SUBSTRING(x.List, cteStart.N1, COALESCE(NULLIF(CHARINDEX(@Delimiter, x.List, cteStart.N1),0) - cteStart.N1, 8000))))
 		INTO #DBFilters
 		FROM (SELECT DBFilter = 'Include', List = @DBIncludeFilterList UNION SELECT 'Exclude', @DBExcludeFilterList) x
 			CROSS APPLY (SELECT N1 = t.N + 1 FROM cteTally t WHERE SUBSTRING(x.List, t.N, 1) = @Delimiter OR t.N = 0) cteStart
@@ -154,19 +156,19 @@ BEGIN
 		INSERT INTO @DBs
 		SELECT DBName	= d.[name]
 			, HasAccess	= HAS_PERMS_BY_NAME(d.[name], 'DATABASE', 'ANY')
-			, DBOnline	= IIF(d.[state] = 0, 1, 0) --IIF([status] & 512 <> 512, 1, 0)
+			, DBOnline	= IIF(d.[state] = 0, 1, 0) --IIF([status] & 512 <> 512, 1, 0) --old way to check
 		FROM [master].sys.databases d
-		WHERE d.database_id > 4	--Filter out system databases
+		WHERE d.[name] NOT IN ('master','tempdb','model','msdb','distribution','sysdb') --exclude system databases --TODO: may need to eventaully add option to search system databases for those who put custom objects in master, or add an override...aka, if 'master' is explicitly provided in @DBName or @DBIncludeFilterList, search it anyways
 			AND (d.[name] = @DBName OR @DBName IS NULL)
 			AND (
 				    (    EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Include') OR @DBIncludeFilterList IS NULL)
 				AND (NOT EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Exclude') OR @DBExcludeFilterList IS NULL)
 			)
-		ORDER BY HasAccess DESC, DBOnline DESC, DBName
 
+		--TODO - killing the proc if more than 50 DB's...add a parameter to let them run anyways? Similar to the bring the hurt parameters in the blitz procs
 		IF ((SELECT COUNT(*) FROM @DBs WHERE HasAccess = 1 AND DBOnline = 1) > 50)
 		BEGIN
-			RAISERROR('That''s a lot of databases....Might not be a good idea to run this',0,1) WITH NOWAIT;
+			RAISERROR('That''s a lot of databases...Might not be a good idea to run this',0,1) WITH NOWAIT;
 			RETURN
 		END
 
@@ -178,6 +180,9 @@ BEGIN
 
 		IF EXISTS(SELECT * FROM @DBs db WHERE db.DBOnline = 0)
 			SELECT 'WARNING: NOT ALL DATABASES CAN BE SCANNED DUE TO BEING OFFLINE'
+
+		--After this, inaccessible DB's are not needed in the table, easier to just remove them from the table than to explicitly filter them every time later on.
+		DELETE d FROM @DBs d WHERE d.HasAccess = 0 OR d.DBOnline = 0
 	END
 	------------------------------------------------------------------------------
 	
@@ -223,7 +228,7 @@ BEGIN
 		INTO #JobStepContents
 		FROM msdb.dbo.sysjobs j
 			JOIN msdb.dbo.sysjobsteps s ON s.job_id = j.job_id
-			OUTER APPLY (
+			OUTER APPLY ( --Check to see if its currently running
 				SELECT IsRunning = 1
 				FROM msdb.dbo.sysjobactivity ja
 				WHERE ja.job_id = j.job_id
@@ -231,7 +236,7 @@ BEGIN
 					AND ja.stop_execution_date IS NULL
 					AND ja.session_id = (SELECT TOP (1) ss.session_id FROM msdb.dbo.syssessions ss ORDER BY ss.agent_start_date DESC)
 			) r
-			CROSS APPLY (
+			OUTER APPLY ( --Get the scheduled time of it's next run...not always accurate due to the latency of updates to the sysjobschedules table, but it's better than nothin I guess
 				SELECT Next_Run_Date = MAX(y.NextRunDateTime)
 				FROM msdb.dbo.sysjobschedules js WITH(NOLOCK)
 					CROSS APPLY (SELECT NextRunTime	= STUFF(STUFF(RIGHT('000000' + CONVERT(VARCHAR(8), js.next_run_time), 6), 5, 0, ':'), 3, 0, ':')) x
@@ -284,27 +289,24 @@ BEGIN
 	------------------------------------------------------------------------------
 	BEGIN
 		--Loop through each database to grab objects
-		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb
+		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb, for now, I like not having dependent procs/functions
 		DECLARE @i INT = 1, @SQL VARCHAR(MAX) = '', @DB VARCHAR(100)
 		WHILE (1=1)
 		BEGIN
-			SELECT @DB = DBName FROM @DBs WHERE ID = @i AND HasAccess = 1 AND DBOnline = 1
-			IF @@ROWCOUNT = 0 BREAK;
+			SELECT @DB = DBName FROM @DBs WHERE ID = @i
+			IF (@@ROWCOUNT = 0) BREAK;
 
 			RAISERROR('	%s',0,1,@DB) WITH NOWAIT;
 
-			SELECT @SQL = '
-				USE ' + @DB
+			SELECT @SQL = 'USE ' + @DB
 
+			--Object search does not have filter as it ended up being faster to grab everything and then filter, also helpful for caching
 			IF (@SearchObjContents = 1 AND NOT EXISTS (SELECT * FROM #Objects WHERE [Database] = @DB))
-			SELECT @SQL	= @SQL + '
-				INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Definition])
-				SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], m.[definition]
-				FROM sys.objects o
-					JOIN sys.sql_modules m ON m.[object_id] = o.[object_id]
-				WHERE o.[name] NOT LIKE ''%sp[_]MSdel[_]%''
-					AND o.[name] NOT LIKE ''%sp[_]MSins[_]%''
-					AND o.[name] NOT LIKE ''%sp[_]MSupd[_]%'''
+				SELECT @SQL	= @SQL + '
+					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Definition])
+					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], m.[definition]
+					FROM sys.objects o
+						JOIN sys.sql_modules m ON m.[object_id] = o.[object_id]'
 
 			SELECT @SQL = @SQL + '
 				INSERT INTO #ObjNames ([Database], SchemaName, ObjectName, [Type_Desc])
@@ -330,6 +332,12 @@ BEGIN
 			SELECT @i += 1
 		END
 		RAISERROR('',0,1) WITH NOWAIT;
+
+		--Remove system objects --TODO: soem people may want to search for these items in order to identify databases that have replication or diagramming objects, may need to handle as a parameter or something later
+		DELETE o
+		FROM #Objects o
+		WHERE LEFT(o.ObjectName, 9) IN ('sp_MSdel_', 'sp_MSins_', 'sp_MSupd_') --Exclude replication objects
+			OR o.ObjectName IN ('fn_diagramobjects','sp_alterdiagram','sp_creatediagram','sp_dropdiagram','sp_helpdiagramdefinition','sp_helpdiagrams','sp_renamediagram','sp_upgraddiagrams') --Exclude diagramming objects
 	END
 	------------------------------------------------------------------------------
 	
@@ -354,7 +362,7 @@ BEGIN
 			FROM #Columns
 			ORDER BY [Database], SchemaName, Table_Name, Column_Name
 		END
-		ELSE SELECT 'Columns', 'NO RESULTS FOUND'
+		ELSE SELECT 'Columns (partial matches)', 'NO RESULTS FOUND'
 		------------------------------------------------------------------------------
 	
 		------------------------------------------------------------------------------
@@ -379,8 +387,7 @@ BEGIN
 		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
 
 		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
-		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
-			, 'Whole'
+		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Whole'
 		FROM #Objects o
 			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
@@ -389,8 +396,7 @@ BEGIN
 
 		IF (@WholeOnly = 0)
 			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
-			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
-				, 'Partial'
+			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Partial'
 			FROM #Objects o
 				JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 			WHERE    o.[Definition] LIKE @PartSearch
@@ -423,7 +429,7 @@ BEGIN
 		INTO #ObjectContentsResults
 		FROM (
 			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality
-				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole', 1, 0) DESC) --If a whole match is found, prefer that over partial match
+				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole', 0, 1)) --If a whole match is found, prefer that over partial match
 			FROM #ObjectContents
 		) o
 		WHERE o.RN = 1
