@@ -11,6 +11,7 @@
 		@ANDSearch				= NULL,					-- Second search criteria
 		@ANDSearch2				= NULL,					-- Third search criteria
 		@WholeOnly				= 1,					-- Exclude partial matches...for example, a search of "Entity" will not match with "EntityOpportunity"
+		@BaseFilePath			= 'C:\PathToFiles'		-- Provides a base path of where your files are stored, for example, git or SVN --TODO: currently, it's based on the folder/file structure that I like to use. Maybe in the future it can be parameter or table driven
 	--Advanced/Beta features:
 		@FindReferences			= 0,					--Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
 		@CacheObjects			= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
@@ -40,20 +41,21 @@ GO
 	-- TODO - Need to figure out how to search calculated columns
 -- =============================================
 CREATE PROCEDURE dbo.usp_SchemaSearch (
-	@Search					VARCHAR(200),
-	@DBName					VARCHAR(50)		= NULL,
-	@ANDSearch				VARCHAR(200)	= NULL,
-	@ANDSearch2				VARCHAR(200)	= NULL,
-	@WholeOnly				BIT				= 0,
-	@SearchObjContents		BIT				= 1,
-	@FindReferences			BIT				= 1,
-	@Debug					BIT				= 0,
+	@Search					varchar(200),
+	@DBName					varchar(50)		= NULL,
+	@ANDSearch				varchar(200)	= NULL,
+	@ANDSearch2				varchar(200)	= NULL,
+	@WholeOnly				bit				= 0,
+	@SearchObjContents		bit				= 1,
+	@FindReferences			bit				= 1,
+	@BaseFilePath			varchar(100)	= '.', --Defaulting to . for default base path
+	@Debug					bit				= 0,
 	--Beta feature -- Allow user to pass in a list of include/exclude filter lists for the DB -- For now this is in addition to the DBName filter...that can be the simple param, these can be for advanced users I guess?
-	@DBIncludeFilterList	VARCHAR(200)	= NULL,
-	@DBExcludeFilterList	VARCHAR(200)	= NULL,
+	@DBIncludeFilterList	varchar(200)	= NULL,
+	@DBExcludeFilterList	varchar(200)	= NULL,
 	--Beta feature -- Still figuring out how to make this intuitive to a new user of this tool
-	@CacheObjects			BIT				= 0,
-	@CacheOutputSchema		BIT				= 0
+	@CacheObjects			bit				= 0,
+	@CacheOutputSchema		bit				= 0
 )
 AS
 BEGIN
@@ -62,18 +64,19 @@ BEGIN
 
 	/*
 		DECLARE
-			@Search					VARCHAR(200)	= 'TestTest',
-			@DBName					VARCHAR(50)		= NULL,
-			@ANDSearch				VARCHAR(200)	= NULL,
-			@ANDSearch2				VARCHAR(200)	= NULL,
-			@WholeOnly				BIT				= 0,
-			@SearchObjContents		BIT				= 1,
-			@FindReferences			BIT				= 1,
-			@Debug					BIT				= 0,
-			@DBIncludeFilterList	VARCHAR(200)	= NULL,
-			@DBExcludeFilterList	VARCHAR(200)	= NULL,
-			@CacheObjects			BIT				= 0,
-			@CacheOutputSchema		BIT				= 0
+			@Search					varchar(200)	= 'TestTest',
+			@DBName					varchar(50)		= NULL,
+			@ANDSearch				varchar(200)	= NULL,
+			@ANDSearch2				varchar(200)	= NULL,
+			@WholeOnly				bit				= 0,
+			@SearchObjContents		bit				= 1,
+			@FindReferences			bit				= 1,
+			@BaseFilePath			varchar(100)	= '.',
+			@Debug					bit				= 0,
+			@DBIncludeFilterList	varchar(200)	= NULL,
+			@DBExcludeFilterList	varchar(200)	= NULL,
+			@CacheObjects			bit				= 0,
+			@CacheOutputSchema		bit				= 0
 	--*/
 	
 	------------------------------------------------------------------------------
@@ -121,13 +124,13 @@ BEGIN
 		SET @DBIncludeFilterList	= NULLIF(@DBIncludeFilterList,'')
 		SET @DBExcludeFilterList	= NULLIF(@DBExcludeFilterList, '')
 
-		DECLARE	@PartSearch			VARCHAR(512)	=			 '%' + @Search     + '%',
-				@ANDPartSearch		VARCHAR(512)	=			 '%' + @ANDSearch  + '%',
-				@ANDPartSearch2		VARCHAR(512)	=			 '%' + @ANDSearch2 + '%',
-				@WholeSearch		VARCHAR(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
-				@ANDWholeSearch		VARCHAR(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
-				@ANDWholeSearch2	VARCHAR(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
-				@CRLF				CHAR(2)			= CHAR(13)+CHAR(10)
+		DECLARE	@PartSearch			varchar(512)	=			 '%' + @Search     + '%',
+				@ANDPartSearch		varchar(512)	=			 '%' + @ANDSearch  + '%',
+				@ANDPartSearch2		varchar(512)	=			 '%' + @ANDSearch2 + '%',
+				@WholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
+				@ANDWholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
+				@ANDWholeSearch2	varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
+				@CRLF				char(2)			= CHAR(13)+CHAR(10)
 
 		SELECT 'SearchCriteria: ', CONCAT('''', @Search, '''', ' AND ''' + @ANDSearch + '''', ' AND ''' + @ANDSearch2 + '''')
 	END
@@ -138,7 +141,7 @@ BEGIN
 	------------------------------------------------------------------------------
 	BEGIN
 		--Parse DB Filter lists
-		DECLARE @Delimiter NVARCHAR(255) = ',';
+		DECLARE @Delimiter nvarchar(255) = ',';
 		IF OBJECT_ID('tempdb..#DBFilters') IS NOT NULL DROP TABLE #DBFilters; --SELECT * FROM #DBFilters
 		WITH
 			E1(N) AS (SELECT x.y FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) x(y)),
@@ -152,7 +155,7 @@ BEGIN
 	
 		------------------------------------------------------------------------------
 		--Populate table with a list of all databases user has access to
-		DECLARE @DBs TABLE (ID INT IDENTITY(1,1) NOT NULL, DBName VARCHAR(100) NOT NULL, HasAccess BIT NOT NULL, DBOnline BIT NOT NULL)
+		DECLARE @DBs table (ID int IDENTITY(1,1) NOT NULL, DBName varchar(100) NOT NULL, HasAccess bit NOT NULL, DBOnline bit NOT NULL)
 		INSERT INTO @DBs
 		SELECT DBName	= d.[name]
 			, HasAccess	= HAS_PERMS_BY_NAME(d.[name], 'DATABASE', 'ANY')
@@ -164,6 +167,7 @@ BEGIN
 				    (    EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Include') OR @DBIncludeFilterList IS NULL)
 				AND (NOT EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Exclude') OR @DBExcludeFilterList IS NULL)
 			)
+		ORDER BY HasAccess DESC, DBOnline DESC
 
 		--TODO - killing the proc if more than 50 DB's...add a parameter to let them run anyways? Similar to the bring the hurt parameters in the blitz procs
 		IF ((SELECT COUNT(*) FROM @DBs WHERE HasAccess = 1 AND DBOnline = 1) > 50)
@@ -191,23 +195,23 @@ BEGIN
 	------------------------------------------------------------------------------
 	BEGIN
 		IF OBJECT_ID('tempdb..#ObjNames')		IS NOT NULL DROP TABLE #ObjNames		--SELECT * FROM #ObjNames
-		CREATE TABLE #ObjNames		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL)
+		CREATE TABLE #ObjNames		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL)
 
 		IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents	--SELECT * FROM #ObjectContents
-		CREATE TABLE #ObjectContents(ID INT IDENTITY(1,1) NOT NULL, ObjectID INT NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, MatchQuality VARCHAR(100) NOT NULL)
+		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL)
 
 		--We only want to re-create this table if it's missing and caching is disabled
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN
 			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects
-			CREATE TABLE #Objects	(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)
+			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL)
 		END
 
 		IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns			--SELECT * FROM #Columns
-		CREATE TABLE #Columns		(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, Table_Name SYSNAME NOT NULL, Column_Name SYSNAME NOT NULL, Data_Type NVARCHAR(128) NOT NULL, Character_Maximum_Length INT NULL, Numeric_Precision INT NULL, Numeric_Scale INT NULL, DateTime_Precision INT NULL)
+		CREATE TABLE #Columns		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, Table_Name sysname NOT NULL, Column_Name sysname NOT NULL, Data_Type nvarchar(128) NOT NULL, Character_Maximum_Length int NULL, Numeric_Precision int NULL, Numeric_Scale int NULL, DateTime_Precision int NULL)
 
 		IF OBJECT_ID('tempdb..#SQL')			IS NOT NULL DROP TABLE #SQL				--SELECT * FROM #SQL
-		CREATE TABLE #SQL			(ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SQLCode VARCHAR(MAX) NOT NULL)
+		CREATE TABLE #SQL			(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SQLCode varchar(MAX) NOT NULL)
 	END
 	------------------------------------------------------------------------------
 	
@@ -239,8 +243,8 @@ BEGIN
 			OUTER APPLY ( --Get the scheduled time of it's next run...not always accurate due to the latency of updates to the sysjobschedules table, but it's better than nothin I guess
 				SELECT Next_Run_Date = MAX(y.NextRunDateTime)
 				FROM msdb.dbo.sysjobschedules js WITH(NOLOCK)
-					CROSS APPLY (SELECT NextRunTime	= STUFF(STUFF(RIGHT('000000' + CONVERT(VARCHAR(8), js.next_run_time), 6), 5, 0, ':'), 3, 0, ':')) x
-					CROSS APPLY (SELECT NextRunDateTime = CASE WHEN j.[enabled] = 0 THEN NULL WHEN js.next_run_date = 0 THEN CONVERT(DATETIME, '1900-01-01') ELSE CONVERT(DATETIME, CONVERT(CHAR(8), js.next_run_date, 112) + ' ' + x.NextRunTime) END) y
+					CROSS APPLY (SELECT NextRunTime	= STUFF(STUFF(RIGHT('000000' + CONVERT(varchar(8), js.next_run_time), 6), 5, 0, ':'), 3, 0, ':')) x
+					CROSS APPLY (SELECT NextRunDateTime = CASE WHEN j.[enabled] = 0 THEN NULL WHEN js.next_run_date = 0 THEN CONVERT(datetime, '1900-01-01') ELSE CONVERT(datetime, CONVERT(char(8), js.next_run_date, 112) + ' ' + x.NextRunTime) END) y
 				WHERE j.job_id = js.job_id
 			) n
 		------------------------------------------------------------------------------
@@ -249,7 +253,7 @@ BEGIN
 		IF OBJECT_ID('tempdb..#JobStepNames_Results') IS NOT NULL DROP TABLE #JobStepNames_Results --SELECT * FROM #JobStepNames_Results
 		SELECT DBName, JobName, StepID, StepName, [Enabled], JobID
 			, IsRunning, NextRunDate
-			, StepCode = CONVERT(XML, '<?query --'+@CRLF+StepCode+@CRLF+'--?>')
+			, StepCode = CONVERT(xml, '<?query --'+@CRLF+StepCode+@CRLF+'--?>')
 		INTO #JobStepNames_Results
 		FROM #JobStepContents c
 		WHERE (	   (JobName		LIKE @PartSearch AND JobName	LIKE COALESCE(@ANDPartSearch, JobName)	AND JobName		LIKE COALESCE(@ANDPartSearch2, JobName))
@@ -268,7 +272,7 @@ BEGIN
 		IF OBJECT_ID('tempdb..#JobStepContents_Results') IS NOT NULL DROP TABLE #JobStepContents_Results --SELECT * FROM #JobStepContents_Results
 		SELECT s.DBName, s.JobName, s.StepID, s.StepName, s.[Enabled], s.JobID
 			, IsRunning, NextRunDate
-			, StepCode = CONVERT(XML, '<?query --'+@CRLF+s.StepCode+@CRLF+'--?>')
+			, StepCode = CONVERT(xml, '<?query --'+@CRLF+s.StepCode+@CRLF+'--?>')
 		INTO #JobStepContents_Results
 		FROM #JobStepContents s
 		WHERE s.StepCode LIKE @PartSearch
@@ -290,7 +294,7 @@ BEGIN
 	BEGIN
 		--Loop through each database to grab objects
 		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb, for now, I like not having dependent procs/functions
-		DECLARE @i INT = 1, @SQL VARCHAR(MAX) = '', @DB VARCHAR(100)
+		DECLARE @i int = 1, @SQL varchar(MAX) = '', @DB varchar(100)
 		WHILE (1=1)
 		BEGIN
 			SELECT @DB = DBName FROM @DBs WHERE ID = @i
@@ -350,13 +354,13 @@ BEGIN
 			SELECT 'Columns (partial matches)'
 		
 			SELECT [Database], SchemaName, Table_Name, Column_Name
-				, DataType = CONCAT(UPPER(DATA_TYPE)
+				, DataType = CONCAT(UPPER(Data_Type)
 								,	CASE
-										WHEN DATA_TYPE IN ('decimal','numeric')	THEN CONCAT('(',Numeric_Precision,',',Numeric_Scale,')')
-										WHEN DATA_TYPE IN ('char','nchar','varchar','nvarchar','varbinary')
-																				THEN '('+IIF(Character_Maximum_Length = -1, 'MAX', CONVERT(VARCHAR(10), Character_Maximum_Length))+')'
-										WHEN DATA_TYPE = 'datetime2'			THEN '('+IIF(DateTime_Precision = 7, NULL, CONVERT(VARCHAR(10), DateTime_Precision))+')' --DATETIME2(7) is the default so it can be ignored, (0) is a valid value
-										WHEN DATA_TYPE = 'time'					THEN '('+CONVERT(VARCHAR(10), DateTime_Precision)+')'
+										WHEN Data_Type IN ('decimal','numeric')	THEN CONCAT('(',Numeric_Precision,',',Numeric_Scale,')')
+										WHEN Data_Type IN ('char','nchar','varchar','nvarchar','varbinary')
+																				THEN '('+IIF(Character_Maximum_Length = -1, 'MAX', CONVERT(varchar(10), Character_Maximum_Length))+')'
+										WHEN Data_Type = 'datetime2'			THEN '('+IIF(DateTime_Precision = 7, NULL, CONVERT(varchar(10), DateTime_Precision))+')' --DATETIME2(7) is the default so it can be ignored, (0) is a valid value
+										WHEN Data_Type = 'time'					THEN '('+CONVERT(varchar(10), DateTime_Precision)+')'
 										ELSE NULL
 									END)
 			FROM #Columns
@@ -405,7 +409,7 @@ BEGIN
 
 		RAISERROR('	Dedup search results',0,1) WITH NOWAIT; -- Whole matches get priority - Add some calculated fields
 		IF OBJECT_ID('tempdb..#ObjectContentsResults') IS NOT NULL DROP TABLE #ObjectContentsResults --SELECT * FROM #ObjectContentsResults
-		SELECT ID = IDENTITY(INT,1,1), o.ObjectID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.MatchQuality
+		SELECT ID = IDENTITY(int,1,1), o.ObjectID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.MatchQuality
 			, QuickScript = CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
 								WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName)
 								WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
@@ -415,7 +419,7 @@ BEGIN
 								WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
 								ELSE NULL
 							END
-			, SVNPath = CONCAT('%SVNPath%\Schema\',o.[Database],'\' --TODO: may change to be an input parameter where the base path is supplied rather than hardcoded as an env variable
+			, FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\' --TODO: may change to be an input parameter where the base path is supplied rather than hardcoded as an env variable
 							, CASE o.[Type_Desc]
 								WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
 								WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
@@ -440,8 +444,8 @@ BEGIN
 			SELECT 'Object - Exact Name match'
 			SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
 				, cr.QuickScript
-				, CompleteObjectContents = CONVERT(XML, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-				, cr.SVNPath
+				, CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
+				, cr.FilePath
 			FROM #ObjectContentsResults cr
 				JOIN #Objects o ON o.ID = cr.ObjectID
 			WHERE cr.ObjectName LIKE @Search --Exact match
@@ -493,8 +497,8 @@ BEGIN
 					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
 						 , r.Label, r.Ref_Name, r.Ref_Type
 						 , cr.QuickScript
-						 , CompleteObjectContents = CONVERT(XML, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-						 , cr.SVNPath
+						 , CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
+						 , cr.FilePath
 					FROM #ObjectContentsResults cr
 						JOIN #Objects o ON o.ID = cr.ObjectID
 						JOIN #ObjectReferences r ON cr.ID = r.ID
@@ -505,8 +509,8 @@ BEGIN
 					--Output without references
 					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
 						, cr.QuickScript
-						, CompleteObjectContents = CONVERT(XML, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-						, cr.SVNPath
+						, CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
+						, cr.FilePath
 					FROM #ObjectContentsResults cr
 						JOIN #Objects o ON o.ID = cr.ObjectID
 					WHERE cr.ObjectName NOT LIKE @Search
