@@ -22,8 +22,6 @@
 	/*
 	Notes: 
 		- Database filters are not applied to searching Jobs / Job Steps since the contents of a job step doesn't always match its assigned DB.
-		- SVNPath field - If you want to use this field, you will need to set up an environment variable %SVNPath% that points to your DB SVN folder
-			- In the future I may make this a variable that is passed in instead.
 	*/
 */
 ------------------------------------------------------------------------------
@@ -55,7 +53,8 @@ CREATE PROCEDURE dbo.usp_SchemaSearch (
 	@DBExcludeFilterList	varchar(200)	= NULL,
 	--Beta feature -- Still figuring out how to make this intuitive to a new user of this tool
 	@CacheObjects			bit				= 0,
-	@CacheOutputSchema		bit				= 0
+	@CacheOutputSchema		bit				= 0,
+	@SuppressErrors			bit				= 0
 )
 AS
 BEGIN
@@ -76,7 +75,8 @@ BEGIN
 			@DBIncludeFilterList	varchar(200)	= NULL,
 			@DBExcludeFilterList	varchar(200)	= NULL,
 			@CacheObjects			bit				= 0,
-			@CacheOutputSchema		bit				= 0
+			@CacheOutputSchema		bit				= 0,
+			@SuppressErrors			bit				= 0
 	--*/
 	------------------------------------------------------------------------------
 	
@@ -99,7 +99,7 @@ BEGIN
 
 			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
 							+ CHAR(13)+CHAR(10)
-							+ 'CREATE TABLE #Objects (ID INT IDENTITY(1,1) NOT NULL, [Database] NVARCHAR(128) NOT NULL, SchemaName NVARCHAR(32) NOT NULL, ObjectName VARCHAR(512) NOT NULL, [Type_Desc] VARCHAR(100) NOT NULL, [Definition] VARCHAR(MAX) NULL)';
+							+ 'CREATE TABLE #Objects (ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL)';
 			RETURN;
 		END;
 
@@ -116,6 +116,7 @@ BEGIN
 		IF (@Search = '')
 			THROW 51000, 'Must Provide a Search Criteria', 1;
 
+		-- Clean parameters
 		SET @DBName					= REPLACE(NULLIF(@DBName,'')		,'_','[_]');
 		SET @Search					= REPLACE(@Search					,'_','[_]');
 		SET @ANDSearch				= REPLACE(NULLIF(@ANDSearch,'')		,'_','[_]');
@@ -129,7 +130,8 @@ BEGIN
 				@WholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
 				@ANDWholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
 				@ANDWholeSearch2	varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
-				@CRLF				char(2)			= CHAR(13)+CHAR(10);
+				@CRLF				char(2)			= CHAR(13)+CHAR(10),
+				@ErrorSeverity		tinyint			= IIF(@SuppressErrors = 0, 16, 1); -- 16 - Throws error, continues exection, 1 - message only with error info
 
 		SELECT 'SearchCriteria: ', CONCAT('''', @Search, '''', ' AND ''' + @ANDSearch + '''', ' AND ''' + @ANDSearch2 + '''');
 	END;
@@ -179,10 +181,10 @@ BEGIN
 		SELECT DBName, HasAccess, DBOnline FROM @DBs ORDER BY DBName;
 
 		IF EXISTS(SELECT * FROM @DBs db WHERE db.HasAccess = 0)
-			RAISERROR('WARNING: Not all databases can be scanned due to permissions',16,1) WITH NOWAIT;
+			RAISERROR('WARNING: Not all databases can be scanned due to permissions',@ErrorSeverity,1) WITH NOWAIT;
 
 		IF EXISTS(SELECT * FROM @DBs db WHERE db.DBOnline = 0)
-			RAISERROR('WARNING: Not all databases can be scanned due to being offline',16,1) WITH NOWAIT;
+			RAISERROR('WARNING: Not all databases can be scanned due to being offline',@ErrorSeverity,1) WITH NOWAIT;
 
 		--After this, inaccessible DB's are not needed in the table, easier to just remove them from the table than to explicitly filter them every time later on.
 		DELETE d FROM @DBs d WHERE d.HasAccess = 0 OR d.DBOnline = 0;
@@ -194,16 +196,16 @@ BEGIN
 	------------------------------------------------------------------------------
 	BEGIN
 		IF OBJECT_ID('tempdb..#ObjNames')		IS NOT NULL DROP TABLE #ObjNames;			--SELECT * FROM #ObjNames
-		CREATE TABLE #ObjNames		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL);
+		CREATE TABLE #ObjNames		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, FilePath varchar(512) NULL);
 
 		IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents;		--SELECT * FROM #ObjectContents
-		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL);
+		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL, FilePath varchar(512) NULL);
 
 		--We only want to re-create this table if it's missing and caching is disabled
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN
 			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects;			--SELECT * FROM #Objects
-			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL);
+			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
 		END;
 
 		IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns;			--SELECT * FROM #Columns
@@ -220,7 +222,7 @@ BEGIN
 	IF (NOT EXISTS (SELECT * FROM sys.fn_my_permissions ('msdb.dbo.sysjobs', 'OBJECT') WHERE [permission_name] = 'SELECT')
 		OR NOT EXISTS (SELECT * FROM sys.fn_my_permissions ('msdb.dbo.sysjobsteps', 'OBJECT') WHERE [permission_name] = 'SELECT'))
 	BEGIN
-		RAISERROR('WARNING: You do not have permission to search SQL Agent jobs',16,1) WITH NOWAIT;
+		RAISERROR('WARNING: You do not have permission to search SQL Agent jobs',@ErrorSeverity,1) WITH NOWAIT;
 	END;
 	ELSE
 	BEGIN
@@ -347,6 +349,36 @@ BEGIN
 		FROM #Objects o
 		WHERE LEFT(o.ObjectName, 9) IN ('sp_MSdel_', 'sp_MSins_', 'sp_MSupd_') --Exclude replication objects
 			OR o.ObjectName IN ('fn_diagramobjects','sp_alterdiagram','sp_creatediagram','sp_dropdiagram','sp_helpdiagramdefinition','sp_helpdiagrams','sp_renamediagram','sp_upgraddiagrams'); --Exclude diagramming objects
+
+		------------------------------------------------------------------------------
+		--Populate file paths
+		------------------------------------------------------------------------------
+			UPDATE o SET
+					FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
+						+ CASE o.[Type_Desc]
+							WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
+							WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
+							WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+							WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+							WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+							WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
+							ELSE NULL
+						END
+			FROM #Objects o
+
+			--TODO: Copy/pasting here for now, but would like to re-use this code somehow. Maybe a temporary function/view written in dynamic sql? I'd like this proc to not have dependencies.
+			UPDATE o SET
+					FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
+						+ CASE o.[Type_Desc]
+							WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
+							WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
+							WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+							WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+							WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+							WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
+							ELSE NULL
+						END
+			FROM #ObjNames o
 	END;
 	------------------------------------------------------------------------------
 	
@@ -380,33 +412,8 @@ BEGIN
 		BEGIN
 			SELECT 'Object - Names (partial matches)';
 
-			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc]
-				--TODO: Copy/pasting here for now, but would like to re-use this code somehow. Maybe a temporary function/view written in dynamic sql? I'd like this proc to not have dependencies.
-				, FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\') --TODO: may change to be an input parameter where the base path is supplied rather than hardcoded as an env variable
-					+ CASE o.[Type_Desc]
-						WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
-						WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
-						WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-						WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-						WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-						WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
-						ELSE NULL
-					END
---				, FilePath2 = REPLACE(REPLACE(REPLACE(x.FilePath2,'@@DatabaseName@@',o.[Database]),'@@SchemaName@@',o.SchemaName),'@@ObjectName@@',o.ObjectName)
+			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.FilePath
 			FROM #ObjNames o
---				CROSS APPLY (
---					SELECT FilePath2 = CONCAT(COALESCE(@BaseFilePath,'.'),'\@@DatabaseName@@\'
---						, CASE o.[Type_Desc]
---							WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\@@SchemaName@@.@@ObjectName@@.StoredProcedure.sql'
---							WHEN 'VIEW'								THEN 'Views\@@SchemaName@@.@@ObjectName@@.View.sql'
---							WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\@@SchemaName@@.@@ObjectName@@.UserDefinedFunction.sql'
---							WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\@@SchemaName@@.@@ObjectName@@.UserDefinedFunction.sql'
---							WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\@@SchemaName@@.@@ObjectName@@.UserDefinedFunction.sql'
---							WHEN 'SQL_TRIGGER'						THEN 'Triggers\@@SchemaName@@.@@ObjectName@@.Trigger.sql'
---							ELSE NULL
---						END
---					)
---				) x
 			ORDER BY o.[Database], o.SchemaName, o.[Type_Desc], o.ObjectName;
 		END;
 		ELSE SELECT 'Object - Names', 'NO RESULTS FOUND';
@@ -420,8 +427,8 @@ BEGIN
 	BEGIN
 		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
 
-		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
-		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Whole'
+		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath)
+		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Whole', o.FilePath
 		FROM #Objects o
 			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
@@ -429,8 +436,8 @@ BEGIN
 			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch2 OR @ANDWholeSearch2 IS NULL);
 
 		IF (@WholeOnly = 0)
-			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality)
-			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Partial'
+			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath)
+			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Partial', o.FilePath
 			FROM #Objects o
 				JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 			WHERE    o.[Definition] LIKE @PartSearch
@@ -439,7 +446,7 @@ BEGIN
 
 		RAISERROR('	Dedup search results',0,1) WITH NOWAIT; -- Whole matches get priority - Add some calculated fields
 		IF OBJECT_ID('tempdb..#ObjectContentsResults') IS NOT NULL DROP TABLE #ObjectContentsResults; --SELECT * FROM #ObjectContentsResults
-		SELECT ID = IDENTITY(int,1,1), o.ObjectID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.MatchQuality
+		SELECT ID = IDENTITY(int,1,1), o.ObjectID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.MatchQuality, o.FilePath
 			, QuickScript = CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
 								WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName)
 								WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
@@ -449,19 +456,9 @@ BEGIN
 								WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
 								ELSE NULL
 							END
-			, FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\') --TODO: may change to be an input parameter where the base path is supplied rather than hardcoded as an env variable
-							+ CASE o.[Type_Desc]
-								WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
-								WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
-								WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-								WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-								WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-								WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
-								ELSE NULL
-							END
 		INTO #ObjectContentsResults
 		FROM (
-			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality
+			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath
 				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole', 0, 1)) --If a whole match is found, prefer that over partial match
 			FROM #ObjectContents
 		) o
@@ -494,40 +491,40 @@ BEGIN
 					-- Get references for search matches
 					IF OBJECT_ID('tempdb..#ObjectReferences') IS NOT NULL DROP TABLE #ObjectReferences; --SELECT * FROM #ObjectReferences
 					SELECT r.ID
-						, Label = IIF(x.CombName IS NOT NULL, '--- mentioned in --->>', NULL)
-						, Ref_Name = x.CombName
-						, Ref_Type = x.[Type_Desc]
+						, [Label]		= IIF(x.CombName IS NOT NULL, '--- mentioned in --->>', NULL)
+						, Ref_Name		= x.CombName
+						, Ref_Type		= x.[Type_Desc]
+						, Ref_FilePath	= x.FilePath
 					INTO #ObjectReferences
 					FROM #ObjectContentsResults r
 						--TODO: Change mentioned in / called by code to use referencing entities dm query as a "whole match" so that it's more accurate as to which instance of the object is being referenced, but contintue to also do string matching as a "partial match"
 						CROSS APPLY (SELECT SecondarySearch = '%EXEC%[^0-9A-Z_]' + REPLACE(r.ObjectName,'_','[_]') + '[^0-9A-Z_]%') ss --Whole search name, preceded by"EXEC" --Not perfect because it can match procs that have same name in multiple databases
 						OUTER APPLY ( --Find all likely called by references, exact matches only -- Can cause left side dups
-							SELECT x.CombName, x.[Type_Desc]
+							SELECT x.CombName, x.[Type_Desc], x.FilePath
 							FROM (
 								--Procs/Triggers
-								SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc]
+								SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc], o.FilePath
 								FROM #Objects o
 								WHERE '#'+[Definition]+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
-					--			WHERE CHARINDEX(r.ObjectName, o.[Definition]) > 0
 									AND o.ObjectName <> r.ObjectName							--Dont include self
 									AND r.[Type_Desc] = 'SQL_STORED_PROCEDURE'					--Reference
 									AND o.[Type_Desc] IN ('SQL_STORED_PROCEDURE','SQL_TRIGGER')	--Referenced By
 								UNION
 								--Jobs
-								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP'
+								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP', NULL
 								FROM #JobStepContents jsc
 								WHERE '#'+StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
-					--			WHERE CHARINDEX(r.ObjectName, StepCode) > 0
 							) x
 							WHERE r.MatchQuality = 'Whole'
 						) x;
 
 					--Output with references
 					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
-						 , r.Label, r.Ref_Name, r.Ref_Type
+						 , r.[Label], r.Ref_Name, r.Ref_Type
 						 , cr.QuickScript
 						 , CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
 						 , cr.FilePath
+						 , r.Ref_FilePath
 					FROM #ObjectContentsResults cr
 						JOIN #Objects o ON o.ID = cr.ObjectID
 						JOIN #ObjectReferences r ON cr.ID = r.ID
