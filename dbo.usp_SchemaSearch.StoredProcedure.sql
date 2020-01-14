@@ -87,7 +87,7 @@ BEGIN
 		--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
 		IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
 		BEGIN
-			SELECT String
+			SELECT x.String
 			FROM (VALUES  (1, 'Run the below script prior to running this proc.')
 						, (2, 'After SchemaSearch finishes running you can')
 						, (3, 'query the results. If you run SchemaSearch')
@@ -99,7 +99,7 @@ BEGIN
 
 			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
 							+ CHAR(13)+CHAR(10)
-							+ 'CREATE TABLE #Objects (ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL)';
+							+ 'CREATE TABLE #Objects (ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Type] char(2) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL)';
 			RETURN;
 		END;
 
@@ -147,7 +147,7 @@ BEGIN
 		WITH
 			E1(N) AS (SELECT x.y FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) x(y)),
 			E2(N) AS (SELECT 1 FROM E1 a CROSS APPLY E1 b CROSS APPLY E1 c CROSS APPLY E1 d),
-			cteTally(N)		AS (SELECT 0 UNION ALL SELECT ROW_NUMBER() OVER (ORDER BY 1/0) FROM E2)
+			cteTally(N) AS (SELECT 0 UNION ALL SELECT ROW_NUMBER() OVER (ORDER BY 1/0) FROM E2)
 		SELECT x.DBFilter, FilterText = LTRIM(RTRIM(SUBSTRING(x.List, cteStart.N1, COALESCE(NULLIF(CHARINDEX(@Delimiter, x.List, cteStart.N1),0) - cteStart.N1, 8000))))
 		INTO #DBFilters
 		FROM (SELECT DBFilter = 'Include', List = @DBIncludeFilterList UNION SELECT 'Exclude', @DBExcludeFilterList) x
@@ -195,21 +195,18 @@ BEGIN
 	RAISERROR('Temp table prep',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN
-		IF OBJECT_ID('tempdb..#ObjNames')		IS NOT NULL DROP TABLE #ObjNames;			--SELECT * FROM #ObjNames
-		CREATE TABLE #ObjNames		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, FilePath varchar(512) NULL);
-
 		IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents;		--SELECT * FROM #ObjectContents
-		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL, FilePath varchar(512) NULL);
+		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL, FilePath varchar(512) NULL, [Definition] varchar(MAX) NULL);
 
 		--We only want to re-create this table if it's missing and caching is disabled
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN
 			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects;			--SELECT * FROM #Objects
-			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
+			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Type] char(2) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
 		END;
 
 		IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns;			--SELECT * FROM #Columns
-		CREATE TABLE #Columns		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, Table_Name sysname NOT NULL, Column_Name sysname NOT NULL, Data_Type nvarchar(128) NOT NULL, Character_Maximum_Length int NULL, Numeric_Precision int NULL, Numeric_Scale int NULL, DateTime_Precision int NULL);
+		CREATE TABLE #Columns		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, TableName sysname NOT NULL, ColumnName sysname NOT NULL, DataType nvarchar(128) NOT NULL, [MaxLength] int NULL, [Precision] int NULL, Scale int NULL);
 
 		IF OBJECT_ID('tempdb..#SQL')			IS NOT NULL DROP TABLE #SQL;				--SELECT * FROM #SQL
 		CREATE TABLE #SQL			(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SQLCode varchar(MAX) NOT NULL);
@@ -233,6 +230,7 @@ BEGIN
 			, StepName		= s.step_name
 			, [Enabled]		= j.[enabled]
 			, StepCode		= s.command
+			, StepCodeXML	= CONVERT(xml, '<?query --'+@CRLF+s.command+@CRLF+'--?>')
 			, JobID			= j.job_id
 			, IsRunning		= COALESCE(r.IsRunning, 0)
 			, NextRunDate	= n.Next_Run_Date
@@ -258,13 +256,11 @@ BEGIN
 	
 		------------------------------------------------------------------------------
 		IF OBJECT_ID('tempdb..#JobStepNames_Results') IS NOT NULL DROP TABLE #JobStepNames_Results; --SELECT * FROM #JobStepNames_Results
-		SELECT DBName, JobName, StepID, StepName, [Enabled], JobID
-			, IsRunning, NextRunDate
-			, StepCode = CONVERT(xml, '<?query --'+@CRLF+StepCode+@CRLF+'--?>')
+		SELECT c.DBName, c.JobName, c.StepID, c.StepName, c.[Enabled], c.JobID, c.IsRunning, c.NextRunDate, StepCode = c.StepCodeXML
 		INTO #JobStepNames_Results
 		FROM #JobStepContents c
-		WHERE (	   (JobName		LIKE @PartSearch AND JobName	LIKE COALESCE(@ANDPartSearch, JobName)	AND JobName		LIKE COALESCE(@ANDPartSearch2, JobName))
-				OR (StepName	LIKE @PartSearch AND StepName	LIKE COALESCE(@ANDPartSearch, StepName)	AND StepName	LIKE COALESCE(@ANDPartSearch2, StepName))
+		WHERE (	   (c.JobName	LIKE @PartSearch AND c.JobName	LIKE COALESCE(@ANDPartSearch, c.JobName)	AND c.JobName	LIKE COALESCE(@ANDPartSearch2, c.JobName))
+				OR (c.StepName	LIKE @PartSearch AND c.StepName	LIKE COALESCE(@ANDPartSearch, c.StepName)	AND c.StepName	LIKE COALESCE(@ANDPartSearch2, c.StepName))
 			);
 
 		IF (@@ROWCOUNT > 0)
@@ -277,9 +273,7 @@ BEGIN
 	
 		------------------------------------------------------------------------------
 		IF OBJECT_ID('tempdb..#JobStepContents_Results') IS NOT NULL DROP TABLE #JobStepContents_Results; --SELECT * FROM #JobStepContents_Results
-		SELECT s.DBName, s.JobName, s.StepID, s.StepName, s.[Enabled], s.JobID
-			, IsRunning, NextRunDate
-			, StepCode = CONVERT(xml, '<?query --'+@CRLF+s.StepCode+@CRLF+'--?>')
+		SELECT s.DBName, s.JobName, s.StepID, s.StepName, s.[Enabled], s.JobID, s.IsRunning, s.NextRunDate, StepCode = s.StepCodeXML
 		INTO #JobStepContents_Results
 		FROM #JobStepContents s
 		WHERE s.StepCode LIKE @PartSearch
@@ -314,28 +308,17 @@ BEGIN
 			--Object search does not have filter as it ended up being faster to grab everything and then filter, also helpful for caching
 			IF (@SearchObjContents = 1 AND NOT EXISTS (SELECT * FROM #Objects WHERE [Database] = @DB))
 				SELECT @SQL	= @SQL + '
-					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Definition])
-					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], m.[definition]
-					FROM sys.objects o
-						JOIN sys.sql_modules m ON m.[object_id] = o.[object_id]';
-
-			SELECT @SQL = @SQL + '
-				INSERT INTO #ObjNames ([Database], SchemaName, ObjectName, [Type_Desc])
-				SELECT DB_NAME(), SCHEMA_NAME([schema_id]), [name], [type_desc]
-				FROM sys.objects
-				WHERE [type] IN (''TT'',''FN'',''IF'',''SQ'',''U'',''V'',''IT'',''P'',''TF'',''TR'',''PC'')
-					AND LEFT([name], 9) NOT IN (''sp_MSdel_'',''sp_MSins_'',''sp_MSupd_'') --Replication procs
-					AND [name] LIKE '''+@PartSearch+''''
-					+ IIF(@ANDPartSearch  IS NOT NULL, ' AND [name] LIKE '''+@ANDPartSearch +'''', '')
-					+ IIF(@ANDPartSearch2 IS NOT NULL, ' AND [name] LIKE '''+@ANDPartSearch2+'''', '');
+					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Type], [Definition])
+					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], o.[type], OBJECT_DEFINITION(o.[object_id])
+					FROM sys.objects o';
 
 			SELECT @SQL	= @SQL + '
-				INSERT INTO #Columns ([Database], SchemaName, Table_Name, Column_Name, Data_Type, Character_Maximum_Length, Numeric_Precision, Numeric_Scale, DateTime_Precision)
-				SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, UPPER(DATA_TYPE), CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION
-				FROM INFORMATION_SCHEMA.COLUMNS
-				WHERE COLUMN_NAME LIKE '''+@PartSearch+''''
-					+ IIF(@ANDPartSearch  IS NOT NULL, ' AND COLUMN_NAME LIKE '''+@ANDPartSearch +'''', '')
-					+ IIF(@ANDPartSearch2 IS NOT NULL, ' AND COLUMN_NAME LIKE '''+@ANDPartSearch2+'''', '');
+				INSERT INTO #Columns ([Database], SchemaName, TableName, ColumnName, DataType, [MaxLength], [Precision], Scale)
+				SELECT DB_NAME(), OBJECT_SCHEMA_NAME(c.[object_id]), OBJECT_NAME(c.[object_id]), c.[name], LOWER(TYPE_NAME(c.system_type_id)), c.max_length, c.[precision], c.scale
+				FROM sys.columns c
+				WHERE c.[name] LIKE '''+@PartSearch+''''
+					+ IIF(@ANDPartSearch  IS NOT NULL, ' AND c.[name] LIKE '''+@ANDPartSearch +'''', '')
+					+ IIF(@ANDPartSearch2 IS NOT NULL, ' AND c.[name] LIKE '''+@ANDPartSearch2+'''', '');
 
 			EXEC sys.sp_sqlexec @p1 = @SQL;
 
@@ -344,17 +327,24 @@ BEGIN
 		END;
 		RAISERROR('',0,1) WITH NOWAIT;
 
-		--Remove system objects --TODO: soem people may want to search for these items in order to identify databases that have replication or diagramming objects, may need to handle as a parameter or something later
+		--Remove system objects and objects we don't care about searching (ex: constraints, service queues, internal/system tables)
+		--TODO: some people may want to search for these items in order to identify databases that have replication or diagramming objects, may need to handle as a parameter or something later
 		DELETE o
 		FROM #Objects o
 		WHERE LEFT(o.ObjectName, 9) IN ('sp_MSdel_', 'sp_MSins_', 'sp_MSupd_') --Exclude replication objects
-			OR o.ObjectName IN ('fn_diagramobjects','sp_alterdiagram','sp_creatediagram','sp_dropdiagram','sp_helpdiagramdefinition','sp_helpdiagrams','sp_renamediagram','sp_upgraddiagrams'); --Exclude diagramming objects
-
+			OR o.ObjectName IN ('fn_diagramobjects','sp_alterdiagram','sp_creatediagram','sp_dropdiagram','sp_helpdiagramdefinition','sp_helpdiagrams','sp_renamediagram','sp_upgraddiagrams') --Exclude diagramming objects
+			OR o.[Type] NOT IN ('TT',			--Type table
+								'FN','IF','TF',	--Functions
+								'U',			--Tables
+								'V',			--Views
+								'P','PC',		--Procs
+								'TR'			--Triggers
+							);
 		------------------------------------------------------------------------------
 		--Populate file paths
 		------------------------------------------------------------------------------
 			UPDATE o SET
-					FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
+					o.FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
 						+ CASE o.[Type_Desc]
 							WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
 							WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
@@ -364,24 +354,10 @@ BEGIN
 							WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
 							ELSE NULL
 						END
-			FROM #Objects o
-
-			--TODO: Copy/pasting here for now, but would like to re-use this code somehow. Maybe a temporary function/view written in dynamic sql? I'd like this proc to not have dependencies.
-			UPDATE o SET
-					FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
-						+ CASE o.[Type_Desc]
-							WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
-							WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
-							WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-							WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-							WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-							WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
-							ELSE NULL
-						END
-			FROM #ObjNames o
+			FROM #Objects o;
 	END;
 	------------------------------------------------------------------------------
-	
+
 	------------------------------------------------------------------------------
 	RAISERROR('Column Name / Object Name Searches',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
@@ -390,23 +366,32 @@ BEGIN
 		BEGIN
 			SELECT 'Columns (partial matches)';
 		
-			SELECT [Database], SchemaName, Table_Name, Column_Name
-				, DataType = CONCAT(UPPER(Data_Type)
+			SELECT [Database], SchemaName, TableName, ColumnName
+				, DataType = CONCAT(DataType
 								,	CASE
-										WHEN Data_Type IN ('decimal','numeric')	THEN CONCAT('(',Numeric_Precision,',',Numeric_Scale,')')
-										WHEN Data_Type IN ('char','nchar','varchar','nvarchar','varbinary')
-																				THEN '('+IIF(Character_Maximum_Length = -1, 'MAX', CONVERT(varchar(10), Character_Maximum_Length))+')'
-										WHEN Data_Type = 'datetime2'			THEN '('+IIF(DateTime_Precision = 7, NULL, CONVERT(varchar(10), DateTime_Precision))+')' --DATETIME2(7) is the default so it can be ignored, (0) is a valid value
-										WHEN Data_Type = 'time'					THEN '('+CONVERT(varchar(10), DateTime_Precision)+')'
+										WHEN DataType IN ('datetime2','time')	THEN IIF(Scale = 7, NULL, CONCAT('(',Scale,')')) --scale of (7) is the default so it can be ignored, (0) is a valid value
+										WHEN DataType IN ('datetimeoffset')		THEN CONCAT('(',Scale,')')
+										WHEN DataType IN ('decimal','numeric')	THEN CONCAT('(',[Precision],',',Scale,')')
+										WHEN DataType IN ('nchar','nvarchar')	THEN IIF(x.[MaxLength] = -1, '(MAX)', CONCAT('(',x.[MaxLength]/2,')'))
+										WHEN DataType IN ('char','varchar')		THEN IIF(x.[MaxLength] = -1, '(MAX)', CONCAT('(',x.[MaxLength],')'))
+										WHEN DataType IN ('binary','varbinary')	THEN IIF(x.[MaxLength] = -1, '(MAX)', CONCAT('(',x.[MaxLength],')'))
 										ELSE NULL
 									END)
-			FROM #Columns
-			ORDER BY [Database], SchemaName, Table_Name, Column_Name;
+			FROM #Columns x;
 		END;
 		ELSE SELECT 'Columns (partial matches)', 'NO RESULTS FOUND';
 		------------------------------------------------------------------------------
 	
 		------------------------------------------------------------------------------
+		IF OBJECT_ID('tempdb..#ObjNames') IS NOT NULL DROP TABLE #ObjNames; --SELECT * FROM #ObjNames
+		SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.FilePath
+		INTO #ObjNames
+		FROM #Objects o
+		WHERE o.ObjectName LIKE @PartSearch
+			AND (@ANDPartSearch IS NULL OR o.ObjectName LIKE @ANDPartSearch)
+			AND (@ANDPartSearch2 IS NULL OR o.ObjectName LIKE @ANDPartSearch2)
+		ORDER BY o.[Database], o.SchemaName, o.[Type_Desc], o.ObjectName;
+
 		--Covers all objects - Views, Procs, Functions, Triggers, Tables, Constraints
 		IF (EXISTS(SELECT * FROM #ObjNames))
 		BEGIN
@@ -427,8 +412,8 @@ BEGIN
 	BEGIN
 		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
 
-		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath)
-		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Whole', o.FilePath
+		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition])
+		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Whole', o.FilePath, o.[Definition]
 		FROM #Objects o
 			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
@@ -436,8 +421,8 @@ BEGIN
 			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch2 OR @ANDWholeSearch2 IS NULL);
 
 		IF (@WholeOnly = 0)
-			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath)
-			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Partial', o.FilePath
+			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition])
+			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Partial', o.FilePath, o.[Definition]
 			FROM #Objects o
 				JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 			WHERE    o.[Definition] LIKE @PartSearch
@@ -456,24 +441,21 @@ BEGIN
 								WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
 								ELSE NULL
 							END
+			, CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
 		INTO #ObjectContentsResults
 		FROM (
-			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath
+			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition]
 				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole', 0, 1)) --If a whole match is found, prefer that over partial match
 			FROM #ObjectContents
 		) o
 		WHERE o.RN = 1;
 
 		--Name match - if you search for something and we find an exact match for that name, separate it out
-		IF (EXISTS (SELECT * FROM #Objects o WHERE ObjectName LIKE @Search))
+		IF (EXISTS (SELECT * FROM #ObjectContentsResults o WHERE o.ObjectName LIKE @Search))
 		BEGIN
 			SELECT 'Object - Exact Name match';
-			SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
-				, cr.QuickScript
-				, CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-				, cr.FilePath
+			SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality, cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
 			FROM #ObjectContentsResults cr
-				JOIN #Objects o ON o.ID = cr.ObjectID
 			WHERE cr.ObjectName LIKE @Search --Exact match
 			ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
 		END;
@@ -513,32 +495,24 @@ BEGIN
 								--Jobs
 								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP', NULL
 								FROM #JobStepContents jsc
-								WHERE '#'+StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
+								WHERE '#'+jsc.StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
 							) x
-							WHERE r.MatchQuality = 'Whole'
 						) x;
 
 					--Output with references
 					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
 						 , r.[Label], r.Ref_Name, r.Ref_Type
-						 , cr.QuickScript
-						 , CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-						 , cr.FilePath
+						 , cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
 						 , r.Ref_FilePath
 					FROM #ObjectContentsResults cr
-						JOIN #Objects o ON o.ID = cr.ObjectID
 						JOIN #ObjectReferences r ON cr.ID = r.ID
 					WHERE cr.ObjectName NOT LIKE @Search
 					ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
 				END; ELSE
 				BEGIN
 					--Output without references
-					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
-						, cr.QuickScript
-						, CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-						, cr.FilePath
+					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality, cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
 					FROM #ObjectContentsResults cr
-						JOIN #Objects o ON o.ID = cr.ObjectID
 					WHERE cr.ObjectName NOT LIKE @Search
 					ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
 				END;
@@ -551,6 +525,8 @@ BEGIN
 	IF (@Debug = 1)
 	BEGIN
 		SELECT 'DEBUG';
+		SELECT WholeSearch = @WholeSearch, ANDWholeSearch = @ANDWholeSearch, ANDWholeSearch2 = @ANDWholeSearch2
+			, PartSearch = @PartSearch, ANDPartSearch = @ANDPartSearch, ANDPartSearch2 = @ANDPartSearch2
 		SELECT [Database], SQLCode FROM #SQL;
 	END;
 
