@@ -57,7 +57,7 @@ CREATE PROCEDURE dbo.usp_SchemaSearch (
 	@SuppressErrors			bit				= 0
 )
 AS
-BEGIN
+BEGIN;
 	SET NOCOUNT ON;
 	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
@@ -83,10 +83,10 @@ BEGIN
 	------------------------------------------------------------------------------
 	RAISERROR('Object chaching precheck',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
-	BEGIN
+	BEGIN;
 		--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
 		IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
-		BEGIN
+		BEGIN;
 			SELECT x.String
 			FROM (VALUES  (1, 'Run the below script prior to running this proc.')
 						, (2, 'After SchemaSearch finishes running you can')
@@ -112,7 +112,7 @@ BEGIN
 	------------------------------------------------------------------------------
 	RAISERROR('Parameter prep / check',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
-	BEGIN
+	BEGIN;
 		IF (@Search = '')
 			THROW 51000, 'Must Provide a Search Criteria', 1;
 
@@ -140,7 +140,7 @@ BEGIN
 	------------------------------------------------------------------------------
 	RAISERROR('DB Filtering',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
-	BEGIN
+	BEGIN;
 		--Parse DB Filter lists
 		DECLARE @Delimiter nvarchar(255) = ',';
 		IF OBJECT_ID('tempdb..#DBFilters') IS NOT NULL DROP TABLE #DBFilters; --SELECT * FROM #DBFilters
@@ -172,7 +172,7 @@ BEGIN
 
 		--TODO - killing the proc if more than 50 DB's...add a parameter to let them run anyways? Similar to the bring the hurt parameters in the blitz procs
 		IF ((SELECT COUNT(*) FROM @DBs WHERE HasAccess = 1 AND DBOnline = 1) > 50)
-		BEGIN
+		BEGIN;
 			RAISERROR('That''s a lot of databases...Might not be a good idea to run this',0,1) WITH NOWAIT;
 			RETURN;
 		END;
@@ -194,13 +194,13 @@ BEGIN
 	------------------------------------------------------------------------------
 	RAISERROR('Temp table prep',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
-	BEGIN
+	BEGIN;
 		IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents;		--SELECT * FROM #ObjectContents
 		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL, FilePath varchar(512) NULL, [Definition] varchar(MAX) NULL);
 
 		--We only want to re-create this table if it's missing and caching is disabled
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
-		BEGIN
+		BEGIN;
 			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects;			--SELECT * FROM #Objects
 			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Type] char(2) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
 		END;
@@ -218,11 +218,11 @@ BEGIN
 	------------------------------------------------------------------------------
 	IF (NOT EXISTS (SELECT * FROM sys.fn_my_permissions ('msdb.dbo.sysjobs', 'OBJECT') WHERE [permission_name] = 'SELECT')
 		OR NOT EXISTS (SELECT * FROM sys.fn_my_permissions ('msdb.dbo.sysjobsteps', 'OBJECT') WHERE [permission_name] = 'SELECT'))
-	BEGIN
+	BEGIN;
 		RAISERROR('WARNING: You do not have permission to search SQL Agent jobs',@ErrorSeverity,1) WITH NOWAIT;
 	END;
 	ELSE
-	BEGIN
+	BEGIN;
 		IF OBJECT_ID('tempdb..#JobStepContents') IS NOT NULL DROP TABLE #JobStepContents; --SELECT * FROM #JobStepContents
 		SELECT DBName		= s.[database_name]
 			, JobName		= j.[name]
@@ -264,7 +264,7 @@ BEGIN
 			);
 
 		IF (@@ROWCOUNT > 0)
-		BEGIN
+		BEGIN;
 			SELECT 'Job/Step - Names';
 			SELECT DBName, JobName, StepID, StepName, [Enabled], StepCode, JobID, IsRunning, NextRunDate FROM #JobStepNames_Results ORDER BY JobName, StepID;
 		END;
@@ -281,7 +281,7 @@ BEGIN
 			AND (s.StepCode LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL);
 
 		IF (@@ROWCOUNT > 0)
-		BEGIN
+		BEGIN;
 			SELECT 'Job step - Contents';
 			SELECT DBName, JobName, StepID, StepName, [Enabled], StepCode, JobID, IsRunning, NextRunDate FROM #JobStepContents_Results ORDER BY JobName, StepID;
 		END;
@@ -292,12 +292,12 @@ BEGIN
 	------------------------------------------------------------------------------
 	RAISERROR('DB Looping',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
-	BEGIN
+	BEGIN;
 		--Loop through each database to grab objects
 		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb, for now, I like not having dependent procs/functions
 		DECLARE @i int = 1, @SQL varchar(MAX) = '', @DB varchar(100);
 		WHILE (1=1)
-		BEGIN
+		BEGIN;
 			SELECT @DB = DBName FROM @DBs WHERE ID = @i;
 			IF (@@ROWCOUNT = 0) BREAK;
 
@@ -306,11 +306,13 @@ BEGIN
 			SELECT @SQL = 'USE ' + @DB;
 
 			--Object search does not have filter as it ended up being faster to grab everything and then filter, also helpful for caching
-			IF (@SearchObjContents = 1 AND NOT EXISTS (SELECT * FROM #Objects WHERE [Database] = @DB))
+			IF (NOT EXISTS (SELECT * FROM #Objects WHERE [Database] = @DB))
+			BEGIN;
 				SELECT @SQL	= @SQL + '
 					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Type], [Definition])
-					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], o.[type], OBJECT_DEFINITION(o.[object_id])
+					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], o.[type], ' + IIF(@SearchObjContents = 1, 'OBJECT_DEFINITION(o.[object_id])', 'NULL') + '
 					FROM sys.objects o';
+			END;
 
 			SELECT @SQL	= @SQL + '
 				INSERT INTO #Columns ([Database], SchemaName, TableName, ColumnName, DataType, [MaxLength], [Precision], Scale)
@@ -361,9 +363,9 @@ BEGIN
 	------------------------------------------------------------------------------
 	RAISERROR('Column Name / Object Name Searches',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
-	BEGIN
+	BEGIN;
 		IF (EXISTS(SELECT * FROM #Columns))
-		BEGIN
+		BEGIN;
 			SELECT 'Columns (partial matches)';
 		
 			SELECT [Database], SchemaName, TableName, ColumnName
@@ -394,7 +396,7 @@ BEGIN
 
 		--Covers all objects - Views, Procs, Functions, Triggers, Tables, Constraints
 		IF (EXISTS(SELECT * FROM #ObjNames))
-		BEGIN
+		BEGIN;
 			SELECT 'Object - Names (partial matches)';
 
 			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.FilePath
@@ -409,7 +411,7 @@ BEGIN
 	-- Object contents searches
 	------------------------------------------------------------------------------
 	IF (@SearchObjContents = 1)
-	BEGIN
+	BEGIN;
 		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
 
 		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition])
@@ -452,7 +454,7 @@ BEGIN
 
 		--Name match - if you search for something and we find an exact match for that name, separate it out
 		IF (EXISTS (SELECT * FROM #ObjectContentsResults o WHERE o.ObjectName LIKE @Search))
-		BEGIN
+		BEGIN;
 			SELECT 'Object - Exact Name match';
 			SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality, cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
 			FROM #ObjectContentsResults cr
@@ -463,11 +465,11 @@ BEGIN
 		
 		------------------------------------------------------------------------------
 			IF (EXISTS(SELECT * FROM #ObjectContentsResults WHERE ObjectName NOT LIKE @Search))
-			BEGIN
+			BEGIN;
 				SELECT 'Object - Contents'; --Covers all objects - Views, Procs, Functions, Triggers
 
 				IF (@FindReferences = 1)
-				BEGIN
+				BEGIN;
 					RAISERROR('	Finding result references',0,1) WITH NOWAIT;
 
 					-- Get references for search matches
@@ -509,7 +511,7 @@ BEGIN
 					WHERE cr.ObjectName NOT LIKE @Search
 					ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
 				END; ELSE
-				BEGIN
+				BEGIN;
 					--Output without references
 					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality, cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
 					FROM #ObjectContentsResults cr
@@ -523,7 +525,7 @@ BEGIN
 	
 	------------------------------------------------------------------------------
 	IF (@Debug = 1)
-	BEGIN
+	BEGIN;
 		SELECT 'DEBUG';
 		SELECT WholeSearch = @WholeSearch, ANDWholeSearch = @ANDWholeSearch, ANDWholeSearch2 = @ANDWholeSearch2
 			, PartSearch = @PartSearch, ANDPartSearch = @ANDPartSearch, ANDPartSearch2 = @ANDPartSearch2
