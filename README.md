@@ -8,7 +8,6 @@ Various SQL stuff I'm working on...tools, scripts, etc
 - **dbo.uf_DateRange.UserDefinedFunction.sql**
 
 - **dbo.usp_SchemaSearch.StoredProcedure.sql**
-	- This is my pride and joy. I use this probably 50 times a day. The easiest way to describe it is...it's a proc version of RedGate SQL Search. I actually use RedGate SQL Search as well...but I found there were many features that I felt were missing, so I decided to make my own.
 	- A few of the features include...
 		- Multiple search criteria (`@Search`, `@ANDSearch`, `@ANDSearch2`)
 			- (AND joins only)...search "this" AND "that"
