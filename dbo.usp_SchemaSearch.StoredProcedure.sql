@@ -94,9 +94,16 @@ BEGIN;
 			) x(ID,String)
 			ORDER BY x.ID;
 
-			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'')		IS NOT NULL DROP TABLE #Objects			--SELECT * FROM #Objects'
-							+ CHAR(13)+CHAR(10)
-							+ 'CREATE TABLE #Objects (ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Type] char(2) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL)';
+			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'') IS NOT NULL DROP TABLE #Objects --SELECT * FROM #Objects'+ CHAR(13)+CHAR(10)
+							+ 'CREATE TABLE #Objects (
+								ID					int IDENTITY(1,1)	NOT NULL,
+								[Database]			nvarchar(128)		NOT NULL,
+								SchemaName			nvarchar(32)		NOT NULL,
+								ObjectName			varchar(512)		NOT NULL,
+								[Type_Desc]			varchar(100)		NOT NULL,
+								[Definition]		varchar(MAX)			NULL,
+								FilePath			varchar(512)			NULL
+							)';
 			RETURN;
 		END;
 
@@ -199,7 +206,7 @@ BEGIN;
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN;
 			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects;			--SELECT * FROM #Objects
-			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Type] char(2) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
+			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
 		END;
 
 		IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns;			--SELECT * FROM #Columns
@@ -306,8 +313,8 @@ BEGIN;
 			IF (NOT EXISTS (SELECT * FROM #Objects WHERE [Database] = @DB))
 			BEGIN;
 				SELECT @SQL	= @SQL + '
-					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Type], [Definition])
-					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], o.[type], ' + IIF(@SearchObjContents = 1, 'OBJECT_DEFINITION(o.[object_id])', 'NULL') + '
+					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Definition])
+					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], ' + IIF(@SearchObjContents = 1 OR @CacheObjects = 1, 'OBJECT_DEFINITION(o.[object_id])', 'NULL') + '
 					FROM sys.objects o';
 			END;
 
@@ -333,12 +340,13 @@ BEGIN;
 		FROM #Objects o
 		WHERE LEFT(o.ObjectName, 9) IN ('sp_MSdel_', 'sp_MSins_', 'sp_MSupd_') --Exclude replication objects
 			OR o.ObjectName IN ('fn_diagramobjects','sp_alterdiagram','sp_creatediagram','sp_dropdiagram','sp_helpdiagramdefinition','sp_helpdiagrams','sp_renamediagram','sp_upgraddiagrams') --Exclude diagramming objects
-			OR o.[Type] NOT IN ('TT',			--Type table
-								'FN','IF','TF',	--Functions
-								'U',			--Tables
-								'V',			--Views
-								'P','PC',		--Procs
-								'TR'			--Triggers
+			OR o.[Type_Desc] NOT IN (
+								'TYPE_TABLE',
+								'SQL_SCALAR_FUNCTION','SQL_INLINE_TABLE_VALUED_FUNCTION','SQL_TABLE_VALUED_FUNCTION',
+								'USER_TABLE',
+								'VIEW',
+								'SQL_STORED_PROCEDURE','CLR_STORED_PROCEDURE',
+								'SQL_TRIGGER'
 							);
 		------------------------------------------------------------------------------
 		--Populate file paths
