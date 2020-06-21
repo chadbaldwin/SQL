@@ -13,11 +13,11 @@
 		@WholeOnly				= 1,					-- Exclude partial matches...for example, a search of "Entity" will not match with "EntityOpportunity"
 		@BaseFilePath			= 'C:\PathToFiles'		-- Provides a base path of where your files are stored, for example, git or SVN --TODO: currently, it's based on the folder/file structure that I like to use. Maybe in the future it can be parameter or table driven
 	--Advanced/Beta features:
-		@FindReferences			= 0,					--Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
+		@FindReferences			= 0,					-- Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
 		@CacheObjects			= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
-		@CacheOutputSchema		= 0,						-- Dependent on @CacheOutputSchema = 1...This provides the DDL query for setting up the cache tables outside of the proc
-		@DBIncludeFilterList	= 'Test%',				--Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
-		@DBExcludeFilterList	= '%[_]Old,%[_]Backup'	--Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
+		@CacheOutputSchema		= 0,					-- Dependent on @CacheOutputSchema = 1...This provides the DDL query for setting up the cache tables outside of the proc
+		@DBIncludeFilterList	= 'Test%',				-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
+		@DBExcludeFilterList	= '%[_]Old,%[_]Backup'	-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
 
 	/*
 	Notes: 
@@ -131,7 +131,7 @@ BEGIN;
 				@ANDWholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
 				@ANDWholeSearch2	varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
 				@CRLF				char(2)			= CHAR(13)+CHAR(10),
-				@ErrorSeverity		tinyint			= IIF(@SuppressErrors = 0, 16, 1); -- 16 - Throws error, continues exection, 1 - message only with error info
+				@ErrorSeverity		tinyint			= IIF(@SuppressErrors = 0, 16, 1); -- 16 - Throws error, continues execution, 1 - message only with error info
 
 		SELECT 'SearchCriteria: ', CONCAT('''', @Search, '''', ' AND ''' + @ANDSearch + '''', ' AND ''' + @ANDSearch2 + '''');
 	END;
@@ -146,7 +146,7 @@ BEGIN;
 		IF OBJECT_ID('tempdb..#DBFilters') IS NOT NULL DROP TABLE #DBFilters; --SELECT * FROM #DBFilters
 		WITH
 			E1(N) AS (SELECT x.y FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) x(y)),
-			E2(N) AS (SELECT 1 FROM E1 a CROSS APPLY E1 b CROSS APPLY E1 c CROSS APPLY E1 d),
+			E2(N) AS (SELECT 1 FROM E1 a CROSS APPLY E1 b CROSS APPLY E1 c),
 			cteTally(N) AS (SELECT 0 UNION ALL SELECT ROW_NUMBER() OVER (ORDER BY 1/0) FROM E2)
 		SELECT x.DBFilter, FilterText = LTRIM(RTRIM(SUBSTRING(x.List, cteStart.N1, COALESCE(NULLIF(CHARINDEX(@Delimiter, x.List, cteStart.N1),0) - cteStart.N1, 8000))))
 		INTO #DBFilters
@@ -295,7 +295,7 @@ BEGIN;
 	BEGIN;
 		--Loop through each database to grab objects
 		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb, for now, I like not having dependent procs/functions
-		DECLARE @i int = 1, @SQL varchar(MAX) = '', @DB varchar(100);
+		DECLARE @i int = 1, @SQL nvarchar(MAX) = '', @DB varchar(100);
 		WHILE (1=1)
 		BEGIN;
 			SELECT @DB = DBName FROM @DBs WHERE ID = @i;
@@ -322,7 +322,7 @@ BEGIN;
 					+ IIF(@ANDPartSearch  IS NOT NULL, ' AND c.[name] LIKE '''+@ANDPartSearch +'''', '')
 					+ IIF(@ANDPartSearch2 IS NOT NULL, ' AND c.[name] LIKE '''+@ANDPartSearch2+'''', '');
 
-			EXEC sys.sp_sqlexec @p1 = @SQL;
+			EXEC sys.sp_executesql @statement = @SQL;
 
 			INSERT INTO #SQL ([Database], SQLCode) SELECT @DB, @SQL;
 			SELECT @i += 1;
@@ -331,6 +331,7 @@ BEGIN;
 
 		--Remove system objects and objects we don't care about searching (ex: constraints, service queues, internal/system tables)
 		--TODO: some people may want to search for these items in order to identify databases that have replication or diagramming objects, may need to handle as a parameter or something later
+		RAISERROR('Deleting ignored/system objects',0,1) WITH NOWAIT;
 		DELETE o
 		FROM #Objects o
 		WHERE LEFT(o.ObjectName, 9) IN ('sp_MSdel_', 'sp_MSins_', 'sp_MSupd_') --Exclude replication objects
@@ -489,14 +490,14 @@ BEGIN;
 								--Procs/Triggers
 								SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc], o.FilePath
 								FROM #Objects o
-								WHERE '#'+[Definition]+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
+								WHERE '#'+o.[Definition]+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
 									AND o.ObjectName <> r.ObjectName							--Dont include self
 									AND r.[Type_Desc] = 'SQL_STORED_PROCEDURE'					--Reference
 									AND o.[Type_Desc] IN ('SQL_STORED_PROCEDURE','SQL_TRIGGER')	--Referenced By
 								UNION
 								--Jobs
 								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP', NULL
-								FROM #JobStepContents jsc
+								FROM #JobStepContents jsc --TODO: Known bug - If user doesn't have access to query SQL agent jobs, then the table won't be created and this will break
 								WHERE '#'+jsc.StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
 							) x
 						) x;
@@ -528,7 +529,7 @@ BEGIN;
 	BEGIN;
 		SELECT 'DEBUG';
 		SELECT WholeSearch = @WholeSearch, ANDWholeSearch = @ANDWholeSearch, ANDWholeSearch2 = @ANDWholeSearch2
-			, PartSearch = @PartSearch, ANDPartSearch = @ANDPartSearch, ANDPartSearch2 = @ANDPartSearch2
+			, PartSearch = @PartSearch, ANDPartSearch = @ANDPartSearch, ANDPartSearch2 = @ANDPartSearch2;
 		SELECT [Database], SQLCode FROM #SQL;
 	END;
 
