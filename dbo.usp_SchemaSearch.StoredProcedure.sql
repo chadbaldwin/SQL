@@ -382,20 +382,25 @@ BEGIN;
 								'SQL_STORED_PROCEDURE','CLR_STORED_PROCEDURE',
 								'SQL_TRIGGER'
 							);
-		------------------------------------------------------------------------------
-		--Populate file paths
-		------------------------------------------------------------------------------
-			UPDATE o SET
-					o.FilePath = CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
-						+ CASE o.[Type_Desc]
-							WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
-							WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
-							WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-							WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-							WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-							WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
-							ELSE NULL
-						END
+	END;
+	------------------------------------------------------------------------------
+		
+	------------------------------------------------------------------------------
+	--Add custom fields
+	------------------------------------------------------------------------------
+	BEGIN;
+		RAISERROR('Adding custom fields to #objects',0,1) WITH NOWAIT;
+			UPDATE o
+				SET	o.FilePath		= CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
+									+	CASE o.[Type_Desc]
+											WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
+											WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
+											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+											WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
+											WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
+											ELSE NULL
+										END
 			FROM #Objects o;
 			------------------------------------------------------------------------------
 			
