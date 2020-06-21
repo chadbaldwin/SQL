@@ -238,6 +238,8 @@ BEGIN;
 			[MaxLength]		int						NULL,
 			[Precision]		int						NULL,
 			Scale			int						NULL,
+			-- Columns used for processing and output
+			DataTypeStr		varchar(100)			NULL,
 		);
 
 		IF OBJECT_ID('tempdb..#SQL') IS NOT NULL DROP TABLE #SQL; --SELECT * FROM #SQL
@@ -395,6 +397,21 @@ BEGIN;
 							ELSE NULL
 						END
 			FROM #Objects o;
+			------------------------------------------------------------------------------
+			
+			------------------------------------------------------------------------------
+			UPDATE c
+				SET c.DataTypeStr = CONCAT(DataType
+									,	CASE
+											WHEN DataType IN ('datetime2','time')	THEN IIF(Scale = 7, NULL, CONCAT('(',Scale,')')) --scale of (7) is the default so it can be ignored, (0) is a valid value
+											WHEN DataType IN ('datetimeoffset')		THEN CONCAT('(',Scale,')')
+											WHEN DataType IN ('decimal','numeric')	THEN CONCAT('(',[Precision],',',Scale,')')
+											WHEN DataType IN ('nchar','nvarchar')	THEN IIF(c.[MaxLength] = -1, '(MAX)', CONCAT('(',c.[MaxLength]/2,')'))
+											WHEN DataType IN ('char','varchar')		THEN IIF(c.[MaxLength] = -1, '(MAX)', CONCAT('(',c.[MaxLength],')'))
+											WHEN DataType IN ('binary','varbinary')	THEN IIF(c.[MaxLength] = -1, '(MAX)', CONCAT('(',c.[MaxLength],')'))
+											ELSE NULL
+										END)
+			FROM #Columns c;
 	END;
 	------------------------------------------------------------------------------
 
@@ -406,17 +423,7 @@ BEGIN;
 		BEGIN;
 			SELECT 'Columns (partial matches)';
 		
-			SELECT [Database], SchemaName, TableName, ColumnName
-				, DataType = CONCAT(DataType
-								,	CASE
-										WHEN DataType IN ('datetime2','time')	THEN IIF(Scale = 7, NULL, CONCAT('(',Scale,')')) --scale of (7) is the default so it can be ignored, (0) is a valid value
-										WHEN DataType IN ('datetimeoffset')		THEN CONCAT('(',Scale,')')
-										WHEN DataType IN ('decimal','numeric')	THEN CONCAT('(',[Precision],',',Scale,')')
-										WHEN DataType IN ('nchar','nvarchar')	THEN IIF(x.[MaxLength] = -1, '(MAX)', CONCAT('(',x.[MaxLength]/2,')'))
-										WHEN DataType IN ('char','varchar')		THEN IIF(x.[MaxLength] = -1, '(MAX)', CONCAT('(',x.[MaxLength],')'))
-										WHEN DataType IN ('binary','varbinary')	THEN IIF(x.[MaxLength] = -1, '(MAX)', CONCAT('(',x.[MaxLength],')'))
-										ELSE NULL
-									END)
+			SELECT x.[Database], x.SchemaName, x.TableName, x.ColumnName, x.DataTypeStr
 			FROM #Columns x;
 		END;
 		ELSE SELECT 'Columns (partial matches)', 'NO RESULTS FOUND';
