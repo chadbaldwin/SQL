@@ -15,7 +15,6 @@
 	--Advanced/Beta features:
 		@FindReferences			= 0,					-- Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
 		@CacheObjects			= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
-		@CacheOutputSchema		= 0,					-- Dependent on @CacheOutputSchema = 1...This provides the DDL query for setting up the cache tables outside of the proc
 		@DBIncludeFilterList	= 'Test%',				-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
 		@DBExcludeFilterList	= '%[_]Old,%[_]Backup'	-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
 
@@ -53,7 +52,6 @@ CREATE PROCEDURE dbo.usp_SchemaSearch (
 	@DBExcludeFilterList	varchar(200)	= NULL,
 	--Beta feature -- Still figuring out how to make this intuitive to a new user of this tool
 	@CacheObjects			bit				= 0,
-	@CacheOutputSchema		bit				= 0,
 	@SuppressErrors			bit				= 0
 )
 AS
@@ -75,7 +73,6 @@ BEGIN;
 			@DBIncludeFilterList	varchar(200)	= NULL,
 			@DBExcludeFilterList	varchar(200)	= NULL,
 			@CacheObjects			bit				= 0,
-			@CacheOutputSchema		bit				= 0,
 			@SuppressErrors			bit				= 0
 	--*/
 	------------------------------------------------------------------------------
@@ -85,7 +82,7 @@ BEGIN;
 	------------------------------------------------------------------------------
 	BEGIN;
 		--If caching is enabled, but the schema hasn't been created, stop here and provide the code needed to create the necessary #tables.
-		IF (@CacheOutputSchema = 1 OR (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL))
+		IF (@CacheObjects = 1 AND OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN;
 			SELECT x.String
 			FROM (VALUES  (1, 'Run the below script prior to running this proc.')
