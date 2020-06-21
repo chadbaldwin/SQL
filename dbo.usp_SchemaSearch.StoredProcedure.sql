@@ -102,8 +102,8 @@ BEGIN;
 								ObjectName			varchar(512)		NOT NULL,
 								[Type_Desc]			varchar(100)		NOT NULL,
 								[Definition]		varchar(MAX)			NULL,
-								FilePath			varchar(512)			NULL
-							)';
+								FilePath			varchar(512)			NULL,
+							);';
 			RETURN;
 		END;
 
@@ -199,21 +199,53 @@ BEGIN;
 	RAISERROR('Temp table prep',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN;
-		IF OBJECT_ID('tempdb..#ObjectContents')	IS NOT NULL DROP TABLE #ObjectContents;		--SELECT * FROM #ObjectContents
-		CREATE TABLE #ObjectContents(ID int IDENTITY(1,1) NOT NULL, ObjectID int NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, MatchQuality varchar(100) NOT NULL, FilePath varchar(512) NULL, [Definition] varchar(MAX) NULL);
+		IF OBJECT_ID('tempdb..#ObjectContents') IS NOT NULL DROP TABLE #ObjectContents; --SELECT * FROM #ObjectContents
+		CREATE TABLE #ObjectContents(
+			ID				int IDENTITY(1,1)	NOT NULL,
+			ObjectID		int					NOT NULL,
+			[Database]		nvarchar(128)		NOT NULL,
+			SchemaName		nvarchar(32)		NOT NULL,
+			ObjectName		varchar(512)		NOT NULL,
+			[Type_Desc]		varchar(100)		NOT NULL,
+			MatchQuality	varchar(100)		NOT NULL,
+			FilePath		varchar(512)			NULL,
+			[Definition]	varchar(MAX)			NULL,
+		);
 
 		--We only want to re-create this table if it's missing and caching is disabled
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN;
-			IF OBJECT_ID('tempdb..#Objects')	IS NOT NULL DROP TABLE #Objects;			--SELECT * FROM #Objects
-			CREATE TABLE #Objects	(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, ObjectName varchar(512) NOT NULL, [Type_Desc] varchar(100) NOT NULL, [Definition] varchar(MAX) NULL, FilePath varchar(512) NULL);
+			IF OBJECT_ID('tempdb..#Objects') IS NOT NULL DROP TABLE #Objects; --SELECT * FROM #Objects
+			CREATE TABLE #Objects (
+				ID					int IDENTITY(1,1)	NOT NULL,
+				[Database]			nvarchar(128)		NOT NULL,
+				SchemaName			nvarchar(32)		NOT NULL,
+				ObjectName			varchar(512)		NOT NULL,
+				[Type_Desc]			varchar(100)		NOT NULL,
+				[Definition]		varchar(MAX)			NULL,
+				FilePath			varchar(512)			NULL,
+			);
 		END;
 
-		IF OBJECT_ID('tempdb..#Columns')		IS NOT NULL DROP TABLE #Columns;			--SELECT * FROM #Columns
-		CREATE TABLE #Columns		(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SchemaName nvarchar(32) NOT NULL, TableName sysname NOT NULL, ColumnName sysname NOT NULL, DataType nvarchar(128) NOT NULL, [MaxLength] int NULL, [Precision] int NULL, Scale int NULL);
+		IF OBJECT_ID('tempdb..#Columns') IS NOT NULL DROP TABLE #Columns; --SELECT * FROM #Columns
+		CREATE TABLE #Columns (
+			ID				int IDENTITY(1,1)	NOT NULL,
+			[Database]		nvarchar(128)		NOT NULL,
+			SchemaName		nvarchar(32)		NOT NULL,
+			TableName		sysname				NOT NULL,
+			ColumnName		sysname				NOT NULL,
+			DataType		nvarchar(128)		NOT NULL,
+			[MaxLength]		int						NULL,
+			[Precision]		int						NULL,
+			Scale			int						NULL,
+		);
 
-		IF OBJECT_ID('tempdb..#SQL')			IS NOT NULL DROP TABLE #SQL;				--SELECT * FROM #SQL
-		CREATE TABLE #SQL			(ID int IDENTITY(1,1) NOT NULL, [Database] nvarchar(128) NOT NULL, SQLCode varchar(MAX) NOT NULL);
+		IF OBJECT_ID('tempdb..#SQL') IS NOT NULL DROP TABLE #SQL; --SELECT * FROM #SQL
+		CREATE TABLE #SQL (
+			ID				int IDENTITY(1,1)	NOT NULL,
+			[Database]		nvarchar(128)		NOT NULL,
+			SQLCode			varchar(MAX)		NOT NULL,
+		);
 	END;
 	------------------------------------------------------------------------------
 	
