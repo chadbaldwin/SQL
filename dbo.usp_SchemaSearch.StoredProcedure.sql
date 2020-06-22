@@ -29,8 +29,6 @@
 IF OBJECT_ID('dbo.usp_SchemaSearch') IS NOT NULL DROP PROCEDURE dbo.usp_SchemaSearch;
 GO
 -- =============================================
--- Author:		Chad Baldwin
--- Create date: 2015-04-13
 -- Description:	Searches object names, object contents (whole word and partial), Table names, Column Names, Job Step code, etc
 --				Basically...it's SQL Search, but better :)
 
@@ -96,13 +94,17 @@ BEGIN;
 
 			SELECT Query = 'IF OBJECT_ID(''tempdb..#Objects'') IS NOT NULL DROP TABLE #Objects --SELECT * FROM #Objects'+ CHAR(13)+CHAR(10)
 							+ 'CREATE TABLE #Objects (
-								ID					int IDENTITY(1,1)	NOT NULL,
+								UniqueObjectID		int IDENTITY(1,1)	NOT NULL,
 								[Database]			nvarchar(128)		NOT NULL,
 								SchemaName			nvarchar(32)		NOT NULL,
 								ObjectName			varchar(512)		NOT NULL,
 								[Type_Desc]			varchar(100)		NOT NULL,
 								[Definition]		varchar(MAX)			NULL,
+								ContentMatchType	varchar(10)				NULL,
+								NameMatchType		varchar(10)				NULL,
 								FilePath			varchar(512)			NULL,
+								QuickScript			varchar(512)			NULL,
+								DefinitionXML		xml						NULL,
 							);';
 			RETURN;
 		END;
@@ -199,37 +201,28 @@ BEGIN;
 	RAISERROR('Temp table prep',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN;
-		IF OBJECT_ID('tempdb..#ObjectContents') IS NOT NULL DROP TABLE #ObjectContents; --SELECT * FROM #ObjectContents
-		CREATE TABLE #ObjectContents(
-			ID				int IDENTITY(1,1)	NOT NULL,
-			ObjectID		int					NOT NULL,
-			[Database]		nvarchar(128)		NOT NULL,
-			SchemaName		nvarchar(32)		NOT NULL,
-			ObjectName		varchar(512)		NOT NULL,
-			[Type_Desc]		varchar(100)		NOT NULL,
-			MatchQuality	varchar(100)		NOT NULL,
-			FilePath		varchar(512)			NULL,
-			[Definition]	varchar(MAX)			NULL,
-		);
-
 		--We only want to re-create this table if it's missing and caching is disabled
 		IF (@CacheObjects = 0 OR OBJECT_ID('tempdb..#Objects') IS NULL)
 		BEGIN;
 			IF OBJECT_ID('tempdb..#Objects') IS NOT NULL DROP TABLE #Objects; --SELECT * FROM #Objects
 			CREATE TABLE #Objects (
-				ID					int IDENTITY(1,1)	NOT NULL,
+				UniqueObjectID		int IDENTITY(1,1)	NOT NULL,
 				[Database]			nvarchar(128)		NOT NULL,
 				SchemaName			nvarchar(32)		NOT NULL,
 				ObjectName			varchar(512)		NOT NULL,
 				[Type_Desc]			varchar(100)		NOT NULL,
 				[Definition]		varchar(MAX)			NULL,
+				-- Columns used for processing and output
+				ContentMatchType	varchar(10)				NULL,
+				NameMatchType		varchar(10)				NULL,
 				FilePath			varchar(512)			NULL,
+				QuickScript			varchar(512)			NULL,
+				DefinitionXML		xml						NULL,
 			);
 		END;
 
 		IF OBJECT_ID('tempdb..#Columns') IS NOT NULL DROP TABLE #Columns; --SELECT * FROM #Columns
 		CREATE TABLE #Columns (
-			ID				int IDENTITY(1,1)	NOT NULL,
 			[Database]		nvarchar(128)		NOT NULL,
 			SchemaName		nvarchar(32)		NOT NULL,
 			TableName		sysname				NOT NULL,
@@ -244,7 +237,6 @@ BEGIN;
 
 		IF OBJECT_ID('tempdb..#SQL') IS NOT NULL DROP TABLE #SQL; --SELECT * FROM #SQL
 		CREATE TABLE #SQL (
-			ID				int IDENTITY(1,1)	NOT NULL,
 			[Database]		nvarchar(128)		NOT NULL,
 			SQLCode			varchar(MAX)		NOT NULL,
 		);
@@ -401,6 +393,18 @@ BEGIN;
 											WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
 											ELSE NULL
 										END
+				, o.QuickScript		=	CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
+											WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName)
+											WHEN 'USER_TABLE'						THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
+											WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
+											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
+											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
+											WHEN 'SQL_SCALAR_FUNCTION'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
+											WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
+											ELSE NULL
+										END
+				, o.DefinitionXML	= IIF(o.[Definition] IS NOT NULL, CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>')), NULL)
+				, o.ContentMatchType = NULL, o.NameMatchType = NULL -- Due to caching, if search parameter is changed, these need to be cleared on each run
 			FROM #Objects o;
 			------------------------------------------------------------------------------
 			
@@ -435,22 +439,22 @@ BEGIN;
 		------------------------------------------------------------------------------
 	
 		------------------------------------------------------------------------------
-		IF OBJECT_ID('tempdb..#ObjNames') IS NOT NULL DROP TABLE #ObjNames; --SELECT * FROM #ObjNames
-		SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.FilePath
-		INTO #ObjNames
+		UPDATE o SET NameMatchType = 'Whole' FROM #Objects o WHERE o.ObjectName LIKE @Search;
+
+		UPDATE o SET NameMatchType = 'Partial'
 		FROM #Objects o
 		WHERE o.ObjectName LIKE @PartSearch
 			AND (@ANDPartSearch IS NULL OR o.ObjectName LIKE @ANDPartSearch)
 			AND (@ANDPartSearch2 IS NULL OR o.ObjectName LIKE @ANDPartSearch2)
-		ORDER BY o.[Database], o.SchemaName, o.[Type_Desc], o.ObjectName;
+			AND o.NameMatchType IS NULL;
 
-		--Covers all objects - Views, Procs, Functions, Triggers, Tables, Constraints
-		IF (EXISTS(SELECT * FROM #ObjNames))
+		IF (EXISTS(SELECT * FROM #Objects WHERE NameMatchType IS NOT NULL))
 		BEGIN;
-			SELECT 'Object - Names (partial matches)';
+			SELECT 'Object - Names';
 
-			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.FilePath
-			FROM #ObjNames o
+			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.QuickScript, o.FilePath
+			FROM #Objects o
+			WHERE o.NameMatchType IS NOT NULL
 			ORDER BY o.[Database], o.SchemaName, o.[Type_Desc], o.ObjectName;
 		END;
 		ELSE SELECT 'Object - Names', 'NO RESULTS FOUND';
@@ -464,8 +468,8 @@ BEGIN;
 	BEGIN;
 		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
 
-		INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition])
-		SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Whole', o.FilePath, o.[Definition]
+		RAISERROR('	Finding whole matches',0,1) WITH NOWAIT;
+		UPDATE o SET ContentMatchType = 'Whole'
 		FROM #Objects o
 			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
@@ -473,101 +477,77 @@ BEGIN;
 			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch2 OR @ANDWholeSearch2 IS NULL);
 
 		IF (@WholeOnly = 0)
-			INSERT INTO #ObjectContents (ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition])
-			SELECT o.ID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], 'Partial', o.FilePath, o.[Definition]
+		BEGIN;
+			RAISERROR('	Finding partial matches',0,1) WITH NOWAIT;
+			UPDATE o SET ContentMatchType = 'Partial'
 			FROM #Objects o
 				JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 			WHERE    o.[Definition] LIKE @PartSearch
 				AND (o.[Definition] LIKE @ANDPartSearch  OR @ANDPartSearch  IS NULL)
-				AND (o.[Definition] LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL);
-
-		RAISERROR('	Dedup search results',0,1) WITH NOWAIT; -- Whole matches get priority - Add some calculated fields
-		IF OBJECT_ID('tempdb..#ObjectContentsResults') IS NOT NULL DROP TABLE #ObjectContentsResults; --SELECT * FROM #ObjectContentsResults
-		SELECT ID = IDENTITY(int,1,1), o.ObjectID, o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.MatchQuality, o.FilePath
-			, QuickScript = CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
-								WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName)
-								WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
-								WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
-								WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
-								WHEN 'SQL_SCALAR_FUNCTION'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
-								WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
-								ELSE NULL
-							END
-			, CompleteObjectContents = CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>'))
-		INTO #ObjectContentsResults
-		FROM (
-			SELECT ObjectID, [Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, FilePath, [Definition]
-				, RN = ROW_NUMBER() OVER (PARTITION BY [Database], ObjectName, [Type_Desc] ORDER BY IIF(MatchQuality = 'Whole', 0, 1)) --If a whole match is found, prefer that over partial match
-			FROM #ObjectContents
-		) o
-		WHERE o.RN = 1;
-
-		--Name match - if you search for something and we find an exact match for that name, separate it out
-		IF (EXISTS (SELECT * FROM #ObjectContentsResults o WHERE o.ObjectName LIKE @Search))
-		BEGIN;
-			SELECT 'Object - Exact Name match';
-			SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality, cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
-			FROM #ObjectContentsResults cr
-			WHERE cr.ObjectName LIKE @Search --Exact match
-			ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
+				AND (o.[Definition] LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL)
+				AND o.ContentMatchType IS NULL;
 		END;
 		------------------------------------------------------------------------------
 		
 		------------------------------------------------------------------------------
-			IF (EXISTS(SELECT * FROM #ObjectContentsResults WHERE ObjectName NOT LIKE @Search))
+			IF (EXISTS(SELECT * FROM #Objects o WHERE o.ContentMatchType IS NOT NULL))
 			BEGIN;
 				SELECT 'Object - Contents'; --Covers all objects - Views, Procs, Functions, Triggers
 
 				IF (@FindReferences = 1)
 				BEGIN;
 					RAISERROR('	Finding result references',0,1) WITH NOWAIT;
+				END;
 
 					-- Get references for search matches
 					IF OBJECT_ID('tempdb..#ObjectReferences') IS NOT NULL DROP TABLE #ObjectReferences; --SELECT * FROM #ObjectReferences
-					SELECT r.ID
-						, [Label]		= IIF(x.CombName IS NOT NULL, '--- mentioned in --->>', NULL)
+					SELECT r.UniqueObjectID
+						, [Label]		= '--- mentioned in --->>'
 						, Ref_Name		= x.CombName
 						, Ref_Type		= x.[Type_Desc]
 						, Ref_FilePath	= x.FilePath
 					INTO #ObjectReferences
-					FROM #ObjectContentsResults r
+					FROM #Objects r
 						--TODO: Change mentioned in / called by code to use referencing entities dm query as a "whole match" so that it's more accurate as to which instance of the object is being referenced, but contintue to also do string matching as a "partial match"
-						CROSS APPLY (SELECT SecondarySearch = '%EXEC%[^0-9A-Z_]' + REPLACE(r.ObjectName,'_','[_]') + '[^0-9A-Z_]%') ss --Whole search name, preceded by"EXEC" --Not perfect because it can match procs that have same name in multiple databases
-						OUTER APPLY ( --Find all likely called by references, exact matches only -- Can cause left side dups
+						CROSS APPLY (SELECT SecondarySearch = '%[^0-9A-Z_]' + REPLACE(r.ObjectName,'_','[_]') + '[^0-9A-Z_]%') ss --Whole search name --Not perfect because it can match procs that have same name in multiple databases
+						CROSS APPLY ( --Find all likely called by references, exact matches only -- Can cause left side dups
 							SELECT x.CombName, x.[Type_Desc], x.FilePath
 							FROM (
-								--Procs/Triggers
+								--Procs/Triggers/Functions/Views
 								SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc], o.FilePath
 								FROM #Objects o
 								WHERE '#'+o.[Definition]+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
 									AND o.ObjectName <> r.ObjectName							--Dont include self
-									AND r.[Type_Desc] = 'SQL_STORED_PROCEDURE'					--Reference
-									AND o.[Type_Desc] IN ('SQL_STORED_PROCEDURE','SQL_TRIGGER')	--Referenced By
+									AND o.[Definition] IS NOT NULL
+									AND NOT (r.[Type_Desc] IN ('SQL_SCALAR_FUNCTION','SQL_INLINE_TABLE_VALUED_FUNCTION','SQL_TABLE_VALUED_FUNCTION','VIEW') AND o.[Type_Desc] = 'STORED_PROCEDURE') --These objects can't call procs
 								UNION
 								--Jobs
 								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP', NULL
 								FROM #JobStepContents jsc --TODO: Known bug - If user doesn't have access to query SQL agent jobs, then the table won't be created and this will break
 								WHERE '#'+jsc.StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
 							) x
-						) x;
+						) x
+					WHERE r.ContentMatchType IS NOT NULL
+						AND r.[Type_Desc] <> 'SQL_TRIGGER'
+						AND @FindReferences = 1; --TODO: Temporary fix to prevent breaking below
 
-					--Output with references
-					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality
-						 , r.[Label], r.Ref_Name, r.Ref_Type
-						 , cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
-						 , r.Ref_FilePath
-					FROM #ObjectContentsResults cr
-						JOIN #ObjectReferences r ON cr.ID = r.ID
-					WHERE cr.ObjectName NOT LIKE @Search
-					ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
-				END; ELSE
-				BEGIN;
-					--Output without references
-					SELECT cr.[Database], cr.SchemaName, cr.ObjectName, cr.[Type_Desc], cr.MatchQuality, cr.QuickScript, cr.CompleteObjectContents, cr.FilePath
-					FROM #ObjectContentsResults cr
-					WHERE cr.ObjectName NOT LIKE @Search
-					ORDER BY cr.[Database], cr.SchemaName, cr.[Type_Desc], cr.ObjectName;
-				END;
+				--Output with references
+				IF OBJECT_ID('tempdb..#ObjRefResults') IS NOT NULL DROP TABLE #ObjRefResults; --SELECT * FROM #ObjRefResults
+				SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], MatchQuality = o.ContentMatchType
+					, r.[Label], r.Ref_Name, r.Ref_Type
+					, o.QuickScript, o.DefinitionXML, o.FilePath
+					, r.Ref_FilePath
+				INTO #ObjRefResults
+				FROM #Objects o
+					LEFT JOIN #ObjectReferences r ON o.UniqueObjectID = r.UniqueObjectID
+				WHERE o.ContentMatchType IS NOT NULL;
+
+				SELECT @SQL = '
+					SELECT x.[Database], x.SchemaName, x.ObjectName, x.[Type_Desc], x.MatchQuality'+IIF(@FindReferences = 1,', x.[Label], x.Ref_Name, x.Ref_Type','')+', x.QuickScript, x.DefinitionXML, x.FilePath'+IIF(@FindReferences = 1, ', x.Ref_FilePath','')
+					+' FROM #ObjRefResults x'
+				--	+' WHERE x.ObjectName NOT LIKE '''+@Search+''''
+					+' ORDER BY x.[Database], x.SchemaName, x.[Type_Desc], x.ObjectName;';
+				EXEC sys.sp_executesql @statement = @SQL;
 			END;
 			ELSE SELECT 'Object - Contents', 'NO RESULTS FOUND';
 	END;
