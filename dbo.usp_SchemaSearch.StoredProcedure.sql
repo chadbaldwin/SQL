@@ -163,7 +163,8 @@ BEGIN;
 		------------------------------------------------------------------------------
 		--Populate table with a list of all databases user has access to
 		DECLARE @DBs table (ID int IDENTITY(1,1) NOT NULL, DBName varchar(100) NOT NULL, HasAccess bit NOT NULL, DBOnline bit NOT NULL);
-		INSERT INTO @DBs
+
+		INSERT INTO @DBs (DBName, HasAccess, DBOnline)
 		SELECT DBName	= d.[name]
 			, HasAccess	= HAS_PERMS_BY_NAME(d.[name], 'DATABASE', 'ANY')
 			, DBOnline	= IIF(d.[state] = 0, 1, 0) --IIF([status] & 512 <> 512, 1, 0) --old way to check
@@ -171,7 +172,7 @@ BEGIN;
 		WHERE d.[name] NOT IN ('master','tempdb','model','msdb','distribution','sysdb') --exclude system databases --TODO: may need to eventaully add option to search system databases for those who put custom objects in master, or add an override...aka, if 'master' is explicitly provided in @DBName or @DBIncludeFilterList, search it anyways
 			AND (d.[name] = @DBName OR @DBName IS NULL)
 			AND (
-				    (    EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Include') OR @DBIncludeFilterList IS NULL)
+					(	 EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Include') OR @DBIncludeFilterList IS NULL)
 				AND (NOT EXISTS (SELECT * FROM #DBFilters dbf WHERE d.[name] LIKE dbf.FilterText AND dbf.DBFilter = 'Exclude') OR @DBExcludeFilterList IS NULL)
 			)
 		ORDER BY HasAccess DESC, DBOnline DESC;
@@ -277,7 +278,7 @@ BEGIN;
 			) r
 			OUTER APPLY ( --Get the scheduled time of it's next run...not always accurate due to the latency of updates to the sysjobschedules table, but it's better than nothin I guess
 				SELECT Next_Run_Date = MAX(y.NextRunDateTime)
-				FROM msdb.dbo.sysjobschedules js WITH(NOLOCK)
+				FROM msdb.dbo.sysjobschedules js
 					CROSS APPLY (SELECT NextRunTime	= STUFF(STUFF(RIGHT('000000' + CONVERT(varchar(8), js.next_run_time), 6), 5, 0, ':'), 3, 0, ':')) x
 					CROSS APPLY (SELECT NextRunDateTime = CASE WHEN j.[enabled] = 0 THEN NULL WHEN js.next_run_date = 0 THEN CONVERT(datetime, '1900-01-01') ELSE CONVERT(datetime, CONVERT(char(8), js.next_run_date, 112) + ' ' + x.NextRunTime) END) y
 				WHERE j.job_id = js.job_id
@@ -331,7 +332,7 @@ BEGIN;
 			SELECT @DB = DBName FROM @DBs WHERE ID = @i;
 			IF (@@ROWCOUNT = 0) BREAK;
 
-			RAISERROR('	%s',0,1,@DB) WITH NOWAIT;
+			RAISERROR('    %s',0,1,@DB) WITH NOWAIT;
 
 			SELECT @SQL = 'USE ' + @DB;
 
@@ -385,27 +386,31 @@ BEGIN;
 			UPDATE o
 				SET	o.FilePath		= CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
 									+	CASE o.[Type_Desc]
-											WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ o.SchemaName + '.' + o.ObjectName + '.StoredProcedure.sql'
-											WHEN 'VIEW'								THEN 'Views\'								+ o.SchemaName + '.' + o.ObjectName + '.View.sql'
-											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-											WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ o.SchemaName + '.' + o.ObjectName + '.UserDefinedFunction.sql'
-											WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ o.SchemaName + '.' + o.ObjectName + '.Trigger.sql'
+											WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ x.BaseFileName + '.StoredProcedure.sql'
+											WHEN 'VIEW'								THEN 'Views\'								+ x.BaseFileName + '.View.sql'
+											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ x.BaseFileName + '.UserDefinedFunction.sql'
+											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ x.BaseFileName + '.UserDefinedFunction.sql'
+											WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ x.BaseFileName + '.UserDefinedFunction.sql'
+											WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ x.BaseFileName + '.Trigger.sql'
 											ELSE NULL
 										END
 				, o.QuickScript		=	CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
-											WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName)
-											WHEN 'USER_TABLE'						THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
-											WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName)
-											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
-											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN CONCAT('-- SELECT TOP(100) * FROM ', o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
-											WHEN 'SQL_SCALAR_FUNCTION'				THEN CONCAT('-- EXEC '					, o.[Database], '.', o.SchemaName, '.', o.ObjectName, '() x')
+											WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, x.FQON)
+											WHEN 'USER_TABLE'						THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON)
+											WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON)
+											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON, '() x')
+											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON, '() x')
+											WHEN 'SQL_SCALAR_FUNCTION'				THEN CONCAT('-- EXEC '					, x.FQON, '() x')
 											WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
 											ELSE NULL
 										END
 				, o.DefinitionXML	= IIF(o.[Definition] IS NOT NULL, CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>')), NULL)
 				, o.ContentMatchType = NULL, o.NameMatchType = NULL -- Due to caching, if search parameter is changed, these need to be cleared on each run
-			FROM #Objects o;
+			FROM #Objects o
+				CROSS APPLY (
+					SELECT FQON			= CONCAT(o.[Database], '.', o.SchemaName, '.', o.ObjectName)
+						, BaseFileName	= CONCAT(o.SchemaName, '.', o.ObjectName)
+				) x;
 			------------------------------------------------------------------------------
 			
 			------------------------------------------------------------------------------
