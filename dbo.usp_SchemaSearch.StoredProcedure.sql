@@ -403,32 +403,36 @@ BEGIN;
 	------------------------------------------------------------------------------
 	BEGIN;
 		RAISERROR('Adding custom fields to #objects',0,1) WITH NOWAIT;
+
+			-- Moved logic out to a temp table to eventually provide ability for user to supply folder structure themselves
+			-- User can supply substitution variables: FQN, BasePath, DatabaseName, SchemaName, ObjectName
+			-- BasePath substitution variable is still provided as a parameter. The basic idea is...everyone using source control
+			-- should be able to use the same folder structure, but not everyone will have the same base path to their repo
+			IF OBJECT_ID('tempdb..#folderStructure') IS NOT NULL DROP TABLE #folderStructure; --SELECT * FROM #folderStructure
+			CREATE TABLE #folderStructure (
+				TypeDesc nvarchar(60) NOT NULL,
+				QuickScriptTemplate nvarchar(200) NULL,
+				FilenameTemplate nvarchar(200) NULL,
+			);
+
+			INSERT INTO #folderStructure (TypeDesc, QuickScriptTemplate, FilenameTemplate)
+			VALUES ('SQL_STORED_PROCEDURE'				, '-- EXEC {{FQN}}'							, '{{BasePath}}\{{DatabaseName}}\StoredProcedures\{{SchemaName}}.{{ObjectName}}.StoredProcedure.sql')
+				,  ('USER_TABLE'						, '-- SELECT TOP(100) * FROM {{FQN}}'		, NULL)
+				,  ('VIEW'								, '-- SELECT TOP(100) * FROM {{FQN}}'		, '{{BasePath}}\{{DatabaseName}}\Views\{{SchemaName}}.{{ObjectName}}.View.sql')
+				,  ('SQL_TABLE_VALUED_FUNCTION'			, '-- SELECT TOP(100) * FROM {{FQN}}() x'	, '{{BasePath}}\{{DatabaseName}}\Functions\Table-valued Functions\{{SchemaName}}.{{ObjectName}}.UserDefinedFunction.sql')
+				,  ('SQL_INLINE_TABLE_VALUED_FUNCTION'	, '-- SELECT TOP(100) * FROM {{FQN}}() x'	, '{{BasePath}}\{{DatabaseName}}\Functions\Table-valued Functions\{{SchemaName}}.{{ObjectName}}.UserDefinedFunction.sql')
+				,  ('SQL_SCALAR_FUNCTION'				, '-- SELECT TOP(100) * FROM {{FQN}}() x'	, '{{BasePath}}\{{DatabaseName}}\Functions\Scalar-valued Functions\{{SchemaName}}.{{ObjectName}}.UserDefinedFunction.sql')
+				,  ('SQL_TRIGGER'						, NULL										, '{{BasePath}}\{{DatabaseName}}\Triggers\{{SchemaName}}.{{ObjectName}}.Trigger.sql');
+
 			UPDATE o
-				SET	o.FilePath		= CONCAT(COALESCE(@BaseFilePath,'.'),'\',o.[Database],'\')
-									+	CASE o.[Type_Desc]
-											WHEN 'SQL_STORED_PROCEDURE'				THEN 'StoredProcedures\'					+ x.BaseFileName + '.StoredProcedure.sql'
-											WHEN 'VIEW'								THEN 'Views\'								+ x.BaseFileName + '.View.sql'
-											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN 'Functions\Table-valued Functions\'	+ x.BaseFileName + '.UserDefinedFunction.sql'
-											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN 'Functions\Table-valued Functions\'	+ x.BaseFileName + '.UserDefinedFunction.sql'
-											WHEN 'SQL_SCALAR_FUNCTION'				THEN 'Functions\Scalar-valued Functions\'	+ x.BaseFileName + '.UserDefinedFunction.sql'
-											WHEN 'SQL_TRIGGER'						THEN 'Triggers\'							+ x.BaseFileName + '.Trigger.sql'
-											ELSE NULL
-										END
-				, o.QuickScript		=	CASE o.[Type_Desc] --This is mainly just to get a quick parsable snippet so that RedGate SQL Prompt will give you the hover popup to view its contents
-											WHEN 'SQL_STORED_PROCEDURE'				THEN CONCAT('-- EXEC '					, x.FQON)
-											WHEN 'USER_TABLE'						THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON)
-											WHEN 'VIEW'								THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON)
-											WHEN 'SQL_TABLE_VALUED_FUNCTION'		THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON, '() x')
-											WHEN 'SQL_INLINE_TABLE_VALUED_FUNCTION'	THEN CONCAT('-- SELECT TOP(100) * FROM ', x.FQON, '() x')
-											WHEN 'SQL_SCALAR_FUNCTION'				THEN CONCAT('-- EXEC '					, x.FQON, '() x')
-											WHEN 'SQL_TRIGGER'						THEN NULL --No action for triggers for now
-											ELSE NULL
-										END
+				SET	o.FilePath		= REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(fs.FilenameTemplate	,'{{BasePath}}',@BaseFilePath),'{{DatabaseName}}',o.[Database]),'{{SchemaName}}',o.SchemaName),'{{ObjectName}}',o.ObjectName),'{{FQN}}',x.FQN)
+				, o.QuickScript		= REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(fs.QuickScriptTemplate,'{{BasePath}}',@BaseFilePath),'{{DatabaseName}}',o.[Database]),'{{SchemaName}}',o.SchemaName),'{{ObjectName}}',o.ObjectName),'{{FQN}}',x.FQN)
 				, o.DefinitionXML	= IIF(o.[Definition] IS NOT NULL, CONVERT(xml, CONCAT('<?query --', @CRLF, REPLACE(REPLACE(o.[Definition],'<?','/*'),'?>','*/'), @CRLF, '--?>')), NULL)
 				, o.ContentMatchType = NULL, o.NameMatchType = NULL -- Due to caching, if search parameter is changed, these need to be cleared on each run
 			FROM #Objects o
+				JOIN #folderStructure fs ON fs.TypeDesc = o.[Type_Desc]
 				CROSS APPLY (
-					SELECT FQON			= CONCAT(o.[Database], '.', o.SchemaName, '.', o.ObjectName)
+					SELECT FQN			= CONCAT(o.[Database], '.', o.SchemaName, '.', o.ObjectName)
 						, BaseFileName	= CONCAT(o.SchemaName, '.', o.ObjectName)
 				) x;
 			------------------------------------------------------------------------------
