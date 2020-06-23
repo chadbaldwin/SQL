@@ -236,6 +236,20 @@ BEGIN;
 			DataTypeStr		varchar(100)			NULL,
 		);
 
+		IF OBJECT_ID('tempdb..#JobStepContents') IS NOT NULL DROP TABLE #JobStepContents; --SELECT * FROM #JobStepContents
+		CREATE TABLE #JobStepContents (
+			DBName		sysname				NULL,
+			JobName		sysname				NULL,
+			StepID		int					NULL,
+			StepName	sysname				NULL,
+			[Enabled]	tinyint				NULL,
+			StepCode	nvarchar(MAX)		NULL,
+			StepCodeXML	xml					NULL,
+			JobID		uniqueidentifier	NULL,
+			IsRunning	bit					NULL,
+			NextRunDate	datetime			NULL,
+		);
+
 		IF OBJECT_ID('tempdb..#SQL') IS NOT NULL DROP TABLE #SQL; --SELECT * FROM #SQL
 		CREATE TABLE #SQL (
 			[Database]		nvarchar(128)		NOT NULL,
@@ -247,14 +261,20 @@ BEGIN;
 	------------------------------------------------------------------------------
 	RAISERROR('Job / Job Step searching',0,1) WITH NOWAIT; -- for now, not limiting to DB filters as the contents of the filter doesn't always run within the specified DB for that Step...because people like to be tricky.
 	------------------------------------------------------------------------------
-	IF (NOT EXISTS (SELECT * FROM sys.fn_my_permissions ('msdb.dbo.sysjobs', 'OBJECT') WHERE [permission_name] = 'SELECT')
-		OR NOT EXISTS (SELECT * FROM sys.fn_my_permissions ('msdb.dbo.sysjobsteps', 'OBJECT') WHERE [permission_name] = 'SELECT'))
+	IF EXISTS (
+		-- Can't select objects from sys.objects because permissions will remove them from the table, hidden from user
+		SELECT *
+		FROM (VALUES ('sysjobs'),('syssessions'),('sysjobsteps'),('sysjobactivity'),('sysjobschedules')) o(TableName)
+			OUTER APPLY (SELECT HasSelectPermission = 1 FROM sys.fn_my_permissions('msdb.dbo.'+o.TableName,'OBJECT') WHERE [permission_name] = 'SELECT') x
+		WHERE x.HasSelectPermission IS NULL
+	)
 	BEGIN;
 		RAISERROR('WARNING: You do not have permission to search SQL Agent jobs',@ErrorSeverity,1) WITH NOWAIT;
 	END;
 	ELSE
 	BEGIN;
-		IF OBJECT_ID('tempdb..#JobStepContents') IS NOT NULL DROP TABLE #JobStepContents; --SELECT * FROM #JobStepContents
+		RAISERROR('Populate table',0,1) WITH NOWAIT;
+		INSERT INTO #JobStepContents (DBName, JobName, StepID, StepName, [Enabled], StepCode, StepCodeXML, JobID, IsRunning, NextRunDate)
 		SELECT DBName		= s.[database_name]
 			, JobName		= j.[name]
 			, StepID		= s.step_id
@@ -265,7 +285,6 @@ BEGIN;
 			, JobID			= j.job_id
 			, IsRunning		= COALESCE(r.IsRunning, 0)
 			, NextRunDate	= n.Next_Run_Date
-		INTO #JobStepContents
 		FROM msdb.dbo.sysjobs j
 			JOIN msdb.dbo.sysjobsteps s ON s.job_id = j.job_id
 			OUTER APPLY ( --Check to see if its currently running
@@ -342,7 +361,8 @@ BEGIN;
 				SELECT @SQL	= @SQL + '
 					INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], [Definition])
 					SELECT DB_NAME(), SCHEMA_NAME(o.[schema_id]), o.[name], o.[type_desc], ' + IIF(@SearchObjContents = 1 OR @CacheObjects = 1, 'OBJECT_DEFINITION(o.[object_id])', 'NULL') + '
-					FROM sys.objects o';
+					FROM sys.objects o
+					WHERE o.is_ms_shipped = 0'; --Exclude built in objects like replication, syncing, diagramming, etc.
 			END;
 
 			SELECT @SQL	= @SQL + '
@@ -495,66 +515,66 @@ BEGIN;
 		------------------------------------------------------------------------------
 		
 		------------------------------------------------------------------------------
-			IF (EXISTS(SELECT * FROM #Objects o WHERE o.ContentMatchType IS NOT NULL))
+		IF (EXISTS(SELECT * FROM #Objects o WHERE o.ContentMatchType IS NOT NULL))
+		BEGIN;
+			SELECT 'Object - Contents'; --Covers all objects - Views, Procs, Functions, Triggers
+
+			IF (@FindReferences = 1)
 			BEGIN;
-				SELECT 'Object - Contents'; --Covers all objects - Views, Procs, Functions, Triggers
-
-				IF (@FindReferences = 1)
-				BEGIN;
-					RAISERROR('	Finding result references',0,1) WITH NOWAIT;
-				END;
-
-					-- Get references for search matches
-					IF OBJECT_ID('tempdb..#ObjectReferences') IS NOT NULL DROP TABLE #ObjectReferences; --SELECT * FROM #ObjectReferences
-					SELECT r.UniqueObjectID
-						, [Label]		= '--- mentioned in --->>'
-						, Ref_Name		= x.CombName
-						, Ref_Type		= x.[Type_Desc]
-						, Ref_FilePath	= x.FilePath
-					INTO #ObjectReferences
-					FROM #Objects r
-						--TODO: Change mentioned in / called by code to use referencing entities dm query as a "whole match" so that it's more accurate as to which instance of the object is being referenced, but contintue to also do string matching as a "partial match"
-						CROSS APPLY (SELECT SecondarySearch = '%[^0-9A-Z_]' + REPLACE(r.ObjectName,'_','[_]') + '[^0-9A-Z_]%') ss --Whole search name --Not perfect because it can match procs that have same name in multiple databases
-						CROSS APPLY ( --Find all likely called by references, exact matches only -- Can cause left side dups
-							SELECT x.CombName, x.[Type_Desc], x.FilePath
-							FROM (
-								--Procs/Triggers/Functions/Views
-								SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc], o.FilePath
-								FROM #Objects o
-								WHERE '#'+o.[Definition]+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
-									AND o.ObjectName <> r.ObjectName							--Dont include self
-									AND o.[Definition] IS NOT NULL
-									AND NOT (r.[Type_Desc] IN ('SQL_SCALAR_FUNCTION','SQL_INLINE_TABLE_VALUED_FUNCTION','SQL_TABLE_VALUED_FUNCTION','VIEW') AND o.[Type_Desc] = 'STORED_PROCEDURE') --These objects can't call procs
-								UNION
-								--Jobs
-								SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP', NULL
-								FROM #JobStepContents jsc --TODO: Known bug - If user doesn't have access to query SQL agent jobs, then the table won't be created and this will break
-								WHERE '#'+jsc.StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
-							) x
-						) x
-					WHERE r.ContentMatchType IS NOT NULL
-						AND r.[Type_Desc] <> 'SQL_TRIGGER'
-						AND @FindReferences = 1; --TODO: Temporary fix to prevent breaking below
-
-				--Output with references
-				IF OBJECT_ID('tempdb..#ObjRefResults') IS NOT NULL DROP TABLE #ObjRefResults; --SELECT * FROM #ObjRefResults
-				SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], MatchQuality = o.ContentMatchType
-					, r.[Label], r.Ref_Name, r.Ref_Type
-					, o.QuickScript, o.DefinitionXML, o.FilePath
-					, r.Ref_FilePath
-				INTO #ObjRefResults
-				FROM #Objects o
-					LEFT JOIN #ObjectReferences r ON o.UniqueObjectID = r.UniqueObjectID
-				WHERE o.ContentMatchType IS NOT NULL;
-
-				SELECT @SQL = '
-					SELECT x.[Database], x.SchemaName, x.ObjectName, x.[Type_Desc], x.MatchQuality'+IIF(@FindReferences = 1,', x.[Label], x.Ref_Name, x.Ref_Type','')+', x.QuickScript, x.DefinitionXML, x.FilePath'+IIF(@FindReferences = 1, ', x.Ref_FilePath','')
-					+' FROM #ObjRefResults x'
-				--	+' WHERE x.ObjectName NOT LIKE '''+@Search+''''
-					+' ORDER BY x.[Database], x.SchemaName, x.[Type_Desc], x.ObjectName;';
-				EXEC sys.sp_executesql @statement = @SQL;
+				RAISERROR('	Finding result references',0,1) WITH NOWAIT;
 			END;
-			ELSE SELECT 'Object - Contents', 'NO RESULTS FOUND';
+
+			-- Get references for search matches
+			IF OBJECT_ID('tempdb..#ObjectReferences') IS NOT NULL DROP TABLE #ObjectReferences; --SELECT * FROM #ObjectReferences
+			SELECT r.UniqueObjectID
+				, [Label]		= '--- mentioned in --->>'
+				, Ref_Name		= x.CombName
+				, Ref_Type		= x.[Type_Desc]
+				, Ref_FilePath	= x.FilePath
+			INTO #ObjectReferences
+			FROM #Objects r
+				--TODO: Change mentioned in / called by code to use referencing entities dm query as a "whole match" so that it's more accurate as to which instance of the object is being referenced, but contintue to also do string matching as a "partial match"
+				CROSS APPLY (SELECT SecondarySearch = '%[^0-9A-Z_]' + REPLACE(r.ObjectName,'_','[_]') + '[^0-9A-Z_]%') ss --Whole search name --Not perfect because it can match procs that have same name in multiple databases
+				CROSS APPLY ( --Find all likely called by references, exact matches only -- Can cause left side dups
+					SELECT x.CombName, x.[Type_Desc], x.FilePath
+					FROM (
+						--Procs/Triggers/Functions/Views
+						SELECT CombName = CONCAT(o.[Database],'.',o.SchemaName,'.',o.ObjectName), o.[Type_Desc], o.FilePath
+						FROM #Objects o
+						WHERE '#'+o.[Definition]+'#' LIKE ss.SecondarySearch	--LIKE Search takes too long
+							AND o.ObjectName <> r.ObjectName					--Dont include self
+							AND o.[Definition] IS NOT NULL
+							AND NOT (r.[Type_Desc] IN ('SQL_SCALAR_FUNCTION','SQL_INLINE_TABLE_VALUED_FUNCTION','SQL_TABLE_VALUED_FUNCTION','VIEW') AND o.[Type_Desc] = 'STORED_PROCEDURE') --These objects can't call procs
+						UNION
+						--Jobs
+						SELECT CombName = CONCAT(jsc.JobName,' - ',jsc.StepID,') ', COALESCE(NULLIF(jsc.StepName,''),'''''')), 'JOB_STEP', NULL
+						FROM #JobStepContents jsc --TODO: Known bug - If user doesn't have access to query SQL agent jobs, then the table won't be created and this will break
+						WHERE '#'+jsc.StepCode+'#' LIKE ss.SecondarySearch --LIKE Search takes too long
+					) x
+				) x
+			WHERE r.ContentMatchType IS NOT NULL
+				AND r.[Type_Desc] <> 'SQL_TRIGGER'
+				AND @FindReferences = 1; --TODO: Temporary fix to prevent breaking below
+
+			--Output with references
+			IF OBJECT_ID('tempdb..#ObjRefResults') IS NOT NULL DROP TABLE #ObjRefResults; --SELECT * FROM #ObjRefResults
+			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], MatchQuality = o.ContentMatchType
+				, r.[Label], r.Ref_Name, r.Ref_Type
+				, o.QuickScript, o.DefinitionXML, o.FilePath
+				, r.Ref_FilePath
+			INTO #ObjRefResults
+			FROM #Objects o
+				LEFT JOIN #ObjectReferences r ON o.UniqueObjectID = r.UniqueObjectID
+			WHERE o.ContentMatchType IS NOT NULL;
+
+			SELECT @SQL = '
+				SELECT x.[Database], x.SchemaName, x.ObjectName, x.[Type_Desc], x.MatchQuality'+IIF(@FindReferences = 1,', x.[Label], x.Ref_Name, x.Ref_Type','')+', x.QuickScript, x.DefinitionXML, x.FilePath'+IIF(@FindReferences = 1, ', x.Ref_FilePath','')
+				+' FROM #ObjRefResults x'
+			--	+' WHERE x.ObjectName NOT LIKE '''+@Search+''''
+				+' ORDER BY x.[Database], x.SchemaName, x.[Type_Desc], x.ObjectName;';
+			EXEC sys.sp_executesql @statement = @SQL;
+		END;
+		ELSE SELECT 'Object - Contents', 'NO RESULTS FOUND';
 	END;
 	------------------------------------------------------------------------------
 	
