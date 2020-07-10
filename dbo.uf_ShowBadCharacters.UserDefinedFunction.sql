@@ -1,4 +1,3 @@
-USE IS_Support;
 GO
 IF OBJECT_ID('dbo.uf_ShowBadCharacters') IS NOT NULL DROP FUNCTION dbo.uf_ShowBadCharacters;
 GO
@@ -12,7 +11,7 @@ CREATE FUNCTION dbo.uf_ShowBadCharacters (
 RETURNS varchar(500)
 AS
 BEGIN
-	DECLARE @Output varchar(200);
+	DECLARE @Output varchar(500);
 
 	SET @Output =
 		REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -38,11 +37,11 @@ BEGIN
 		@InputString
 
 		--Standard ASCII
-		,CHAR(0)  , '[NUL_0]'),CHAR(1) , '[SOH_1]'),CHAR(2) , '[STX_2]'),CHAR(3) , '[ETX_2]'),CHAR(4) , '[EOT_4]'),CHAR(5) , '[ENQ_5]'),CHAR(6) , '[ACK_6]'),CHAR(7) , '[BEL_7]'),CHAR(8) ,  '[BS_8]'),CHAR(9) , '[TAB_9]')
-		,CHAR(10) , '[LF_10]'),CHAR(11), '[VT_11]'),CHAR(12), '[FF_12]'),CHAR(13), '[CR_12]'),CHAR(14), '[SO_14]'),CHAR(15), '[SI_15]'),CHAR(16),'[DLE_16]'),CHAR(17),'[DC1_17]'),CHAR(18),'[DC2_18]'),CHAR(19),'[DC3_19]')
-		,CHAR(20) ,'[DC4_20]'),CHAR(21),'[NAK_21]'),CHAR(22),'[SYN_22]'),CHAR(23),'[ETB_22]'),CHAR(24),'[CAN_24]'),CHAR(25), '[EM_25]'),CHAR(26),'[SUB_26]'),CHAR(27),'[ESC_27]'),CHAR(28), '[FS_28]'),CHAR(29), '[GS_29]')
-		,CHAR(30) , '[RS_30]'),CHAR(31), '[US_31]')--,CHAR(32), '[SP_32]') --Space
-		,CHAR(127),'[DEL]')
+		,CHAR(0)  ,  '[NUL_0]'),CHAR(1) , '[SOH_1]'),CHAR(2) , '[STX_2]'),CHAR(3) , '[ETX_2]'),CHAR(4) , '[EOT_4]'),CHAR(5) , '[ENQ_5]'),CHAR(6) , '[ACK_6]'),CHAR(7) , '[BEL_7]'),CHAR(8) ,  '[BS_8]'),CHAR(9) , '[TAB_9]')
+		,CHAR(10) ,  '[LF_10]'),CHAR(11), '[VT_11]'),CHAR(12), '[FF_12]'),CHAR(13), '[CR_12]'),CHAR(14), '[SO_14]'),CHAR(15), '[SI_15]'),CHAR(16),'[DLE_16]'),CHAR(17),'[DC1_17]'),CHAR(18),'[DC2_18]'),CHAR(19),'[DC3_19]')
+		,CHAR(20) , '[DC4_20]'),CHAR(21),'[NAK_21]'),CHAR(22),'[SYN_22]'),CHAR(23),'[ETB_22]'),CHAR(24),'[CAN_24]'),CHAR(25), '[EM_25]'),CHAR(26),'[SUB_26]'),CHAR(27),'[ESC_27]'),CHAR(28), '[FS_28]'),CHAR(29), '[GS_29]')
+		,CHAR(30) ,  '[RS_30]'),CHAR(31), '[US_31]')--,CHAR(32), '[SP_32]') --Space
+		,CHAR(127),'[DEL_127]')
 		--Extended ASCII
 		,CHAR(128),'[EXT_128]'),CHAR(129),'[EXT_129]'),CHAR(130),'[EXT_130]'),CHAR(131),'[EXT_131]'),CHAR(132),'[EXT_132]'),CHAR(133),'[EXT_133]'),CHAR(134),'[EXT_134]'),CHAR(135),'[EXT_135]'),CHAR(136),'[EXT_136]'),CHAR(137),'[EXT_137]')
 		,CHAR(138),'[EXT_138]'),CHAR(139),'[EXT_139]'),CHAR(140),'[EXT_140]'),CHAR(141),'[EXT_141]'),CHAR(142),'[EXT_142]'),CHAR(143),'[EXT_143]'),CHAR(144),'[EXT_144]'),CHAR(145),'[EXT_145]'),CHAR(146),'[EXT_146]'),CHAR(147),'[EXT_147]')
@@ -56,7 +55,7 @@ BEGIN
 		,CHAR(218),'[EXT_218]'),CHAR(219),'[EXT_219]'),CHAR(220),'[EXT_220]'),CHAR(221),'[EXT_221]'),CHAR(222),'[EXT_222]'),CHAR(223),'[EXT_223]'),CHAR(224),'[EXT_224]'),CHAR(225),'[EXT_225]'),CHAR(226),'[EXT_226]'),CHAR(227),'[EXT_227]')
 		,CHAR(228),'[EXT_228]'),CHAR(229),'[EXT_229]'),CHAR(230),'[EXT_230]'),CHAR(231),'[EXT_231]'),CHAR(232),'[EXT_232]'),CHAR(233),'[EXT_233]'),CHAR(234),'[EXT_234]'),CHAR(235),'[EXT_235]'),CHAR(236),'[EXT_236]'),CHAR(237),'[EXT_237]')
 		,CHAR(238),'[EXT_238]'),CHAR(239),'[EXT_239]'),CHAR(240),'[EXT_240]'),CHAR(241),'[EXT_241]'),CHAR(242),'[EXT_242]'),CHAR(243),'[EXT_243]'),CHAR(244),'[EXT_244]'),CHAR(245),'[EXT_245]'),CHAR(246),'[EXT_246]'),CHAR(247),'[EXT_247]')
-		,CHAR(248),'[EXT_248]'),CHAR(249),'[EXT_249]'),CHAR(250),'[EXT_250]'),CHAR(251),'[EXT_251]'),CHAR(252),'[EXT_252]'),CHAR(253),'[EXT_253]'),CHAR(254),'[EXT_254]'),CHAR(255),'[EXT_255]')
+		,CHAR(248),'[EXT_248]'),CHAR(249),'[EXT_249]'),CHAR(250),'[EXT_250]'),CHAR(251),'[EXT_251]'),CHAR(252),'[EXT_252]'),CHAR(253),'[EXT_253]'),CHAR(254),'[EXT_254]'),CHAR(255),'[EXT_255]');
 
 	RETURN @Output;
 END
