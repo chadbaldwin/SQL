@@ -4,19 +4,20 @@
 /*
 	EXEC dbo.usp_SchemaSearch
 	--Basic options
-		@Search					= 'SearchCriteria',		-- Your search criteria
-		@DBName					= NULL,					-- Simple Database filter...Limits everything to only this database
+		@Search						= 'SearchCriteria',		-- Your search criteria
+		@DBName						= NULL,					-- Simple Database filter...Limits everything to only this database
 	--Additional options
-		@SearchObjContents		= 1,					-- Whether or not you want to search the actual code of a proc, function, view, etc
-		@ANDSearch				= NULL,					-- Second search criteria
-		@ANDSearch2				= NULL,					-- Third search criteria
-		@WholeOnly				= 1,					-- Exclude partial matches...for example, a search of "Entity" will not match with "EntityOpportunity"
-		@BaseFilePath			= 'C:\PathToFiles'		-- Provides a base path of where your files are stored, for example, git or SVN --TODO: currently, it's based on the folder/file structure that I like to use. Maybe in the future it can be parameter or table driven
+		@SearchObjContents			= 1,					-- Whether or not you want to search the actual code of a proc, function, view, etc
+		@ANDSearch					= NULL,					-- Second search criteria
+		@ANDSearch2					= NULL,					-- Third search criteria
+		@WholeOnly					= 1,					-- Exclude partial matches...for example, a search of "Entity" will not match with "EntityOpportunity"
+		@BaseFilePath				= 'C:\PathToFiles'		-- Provides a base path of where your files are stored, for example, git or SVN --TODO: currently, it's based on the folder/file structure that I like to use. Maybe in the future it can be parameter or table driven
 	--Advanced/Beta features:
-		@FindReferences			= 0,					-- Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
-		@CacheObjects			= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
-		@DBIncludeFilterList	= 'Test%',				-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
-		@DBExcludeFilterList	= '%[_]Old,%[_]Backup'	-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
+		@FindReferences				= 0,					-- Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
+		@CacheObjects				= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
+		@DBIncludeFilterList		= 'Test%',				-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
+		@DBExcludeFilterList		= '%[_]Old,%[_]Backup'	-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
+		@ForceSSMSMaxColumnWidth	= 0						-- Force SSMS to adjust the column width to be that of the widest value in the dataset (up to 50 characters)
 
 	/*
 	Notes: 
@@ -34,23 +35,26 @@ GO
 
 -- Notes:
 	-- TODO - Need to figure out how to search calculated columns
+	-- TODO - Add new parameter - Output object names using QUOTENAME(). In general this is a good idea, but for those who make sure their objectnames don't require it, they may not want to use it
+	--		- To add onto this...should this feature be either on/off? Or maybe it could have a third option...which would be "only when necessary". Aka, only add square brackets when the name requires it.
 -- =============================================
 CREATE PROCEDURE dbo.usp_SchemaSearch (
-	@Search					varchar(200),
-	@DBName					varchar(50)		= NULL,
-	@ANDSearch				varchar(200)	= NULL,
-	@ANDSearch2				varchar(200)	= NULL,
-	@WholeOnly				bit				= 0,
-	@SearchObjContents		bit				= 1,
-	@FindReferences			bit				= 1,
-	@BaseFilePath			varchar(100)	= '.', --Defaulting to . for default base path
-	@Debug					bit				= 0,
+	@Search						nvarchar(200),
+	@DBName						nvarchar(50)	= NULL,
+	@ANDSearch					nvarchar(200)	= NULL,
+	@ANDSearch2					nvarchar(200)	= NULL,
+	@WholeOnly					bit				= 0,
+	@SearchObjContents			bit				= 1,
+	@FindReferences				bit				= 1,
+	@BaseFilePath				nvarchar(100)	= '.', --Defaulting to . for default base path
+	@Debug						bit				= 0,
 	--Beta feature -- Allow user to pass in a list of include/exclude filter lists for the DB -- For now this is in addition to the DBName filter...that can be the simple param, these can be for advanced users I guess?
-	@DBIncludeFilterList	varchar(200)	= NULL,
-	@DBExcludeFilterList	varchar(200)	= NULL,
+	@DBIncludeFilterList		nvarchar(200)	= NULL,
+	@DBExcludeFilterList		nvarchar(200)	= NULL,
 	--Beta feature -- Still figuring out how to make this intuitive to a new user of this tool
-	@CacheObjects			bit				= 0,
-	@SuppressErrors			bit				= 0
+	@CacheObjects				bit				= 0,
+	@SuppressErrors				bit				= 0,
+	@ForceSSMSMaxColumnWidth	bit				= 0
 )
 AS
 BEGIN;
@@ -123,6 +127,9 @@ BEGIN;
 			THROW 51000, 'Must Provide a Search Criteria', 1;
 
 		-- Clean parameters
+		-- Note: underscores are ignored and treated as literals.
+		-- This is because underscores quite common to appear in an identifier.
+		-- A user trying to use the LIKE single character wildcard will have to use other means for now, like [a-z0-9 ]
 		SET @DBName					= REPLACE(NULLIF(@DBName,'')		,'_','[_]');
 		SET @Search					= REPLACE(@Search					,'_','[_]');
 		SET @ANDSearch				= REPLACE(NULLIF(@ANDSearch,'')		,'_','[_]');
@@ -130,16 +137,17 @@ BEGIN;
 		SET @DBIncludeFilterList	= NULLIF(@DBIncludeFilterList,'');
 		SET @DBExcludeFilterList	= NULLIF(@DBExcludeFilterList, '');
 
-		DECLARE	@PartSearch			varchar(512)	=			 '%' + @Search     + '%',
-				@ANDPartSearch		varchar(512)	=			 '%' + @ANDSearch  + '%',
-				@ANDPartSearch2		varchar(512)	=			 '%' + @ANDSearch2 + '%',
-				@WholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
-				@ANDWholeSearch		varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
-				@ANDWholeSearch2	varchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
-				@CRLF				char(2)			= CHAR(13)+CHAR(10),
+		DECLARE	@PartSearch			nvarchar(512)	=			 '%' + @Search     + '%',
+				@ANDPartSearch		nvarchar(512)	=			 '%' + @ANDSearch  + '%',
+				@ANDPartSearch2		nvarchar(512)	=			 '%' + @ANDSearch2 + '%',
+				@WholeSearch		nvarchar(512)	=  '%[^0-9A-Z_]' + @Search     + '[^0-9A-Z_]%',
+				@ANDWholeSearch		nvarchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch  + '[^0-9A-Z_]%',
+				@ANDWholeSearch2	nvarchar(512)	=  '%[^0-9A-Z_]' + @ANDSearch2 + '[^0-9A-Z_]%',
+				@CRLF				nchar(2)		= NCHAR(13)+NCHAR(10),
 				@ErrorSeverity		tinyint			= IIF(@SuppressErrors = 0, 16, 1); -- 16 - Throws error, continues execution, 1 - message only with error info
 
 		SELECT 'SearchCriteria: ', CONCAT('''', @Search, '''', ' AND ''' + @ANDSearch + '''', ' AND ''' + @ANDSearch2 + '''');
+		RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 	END;
 	------------------------------------------------------------------------------
 	
@@ -147,22 +155,24 @@ BEGIN;
 	RAISERROR('DB Filtering',0,1) WITH NOWAIT;
 	------------------------------------------------------------------------------
 	BEGIN;
+		-- Use XML to generate tally table
+		DECLARE @x xml = REPLICATE(CONVERT(varchar(MAX),'<n/>'), 100); --Table size
+
 		--Parse DB Filter lists
-		DECLARE @Delimiter nvarchar(255) = ',';
 		IF OBJECT_ID('tempdb..#DBFilters') IS NOT NULL DROP TABLE #DBFilters; --SELECT * FROM #DBFilters
-		WITH
-			E1(N) AS (SELECT x.y FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) x(y)),
-			E2(N) AS (SELECT 1 FROM E1 a CROSS APPLY E1 b CROSS APPLY E1 c),
-			cteTally(N) AS (SELECT 0 UNION ALL SELECT ROW_NUMBER() OVER (ORDER BY 1/0) FROM E2)
-		SELECT x.DBFilter, FilterText = LTRIM(RTRIM(SUBSTRING(x.List, cteStart.N1, COALESCE(NULLIF(CHARINDEX(@Delimiter, x.List, cteStart.N1),0) - cteStart.N1, 8000))))
+		WITH c(rn) AS (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 FROM @x.nodes('n') x(n))
+		SELECT x.DBFilter, FilterText = LTRIM(RTRIM(SUBSTRING(x.List, c.[Start], y.[Length])))
 		INTO #DBFilters
-		FROM (SELECT DBFilter = 'Include', List = @DBIncludeFilterList UNION SELECT 'Exclude', @DBExcludeFilterList) x
-			CROSS APPLY (SELECT N1 = t.N + 1 FROM cteTally t WHERE SUBSTRING(x.List, t.N, 1) = @Delimiter OR t.N = 0) cteStart;
+		FROM (VALUES ('Include', @DBIncludeFilterList), ('Exclude', @DBExcludeFilterList)) x(DBFilter, List)
+		-- Find the position of each comma as well as the position of the following comma, and generate start/length values to use for substring
+			CROSS APPLY (SELECT [Start] = t.rn + 1 FROM c t WHERE SUBSTRING(x.List, t.rn, 1) = ',' OR t.rn = 0) c -- Find starting position for current item
+			CROSS APPLY (SELECT [Length] = COALESCE(NULLIF(CHARINDEX(',', x.List, c.[Start]), 0) - c.[Start], 8000)) y -- Find length of current item
+		ORDER BY x.DBFilter, x.List, c.[Start];
 		------------------------------------------------------------------------------
 	
 		------------------------------------------------------------------------------
 		--Populate table with a list of all databases user has access to
-		DECLARE @DBs table (ID int IDENTITY(1,1) NOT NULL, DBName varchar(100) NOT NULL, HasAccess bit NOT NULL, DBOnline bit NOT NULL);
+		DECLARE @DBs table (ID int IDENTITY(1,1) NOT NULL, DBName nvarchar(100) NOT NULL, HasAccess bit NOT NULL, DBOnline bit NOT NULL);
 
 		INSERT INTO @DBs (DBName, HasAccess, DBOnline)
 		SELECT DBName	= d.[name]
@@ -186,6 +196,7 @@ BEGIN;
 
 		--Output list of Databases and Access/Online info
 		SELECT DBName, HasAccess, DBOnline FROM @DBs ORDER BY DBName;
+		RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 
 		IF EXISTS(SELECT * FROM @DBs db WHERE db.HasAccess = 0)
 			RAISERROR('WARNING: Not all databases can be scanned due to permissions',@ErrorSeverity,1) WITH NOWAIT;
@@ -208,32 +219,32 @@ BEGIN;
 			IF OBJECT_ID('tempdb..#Objects') IS NOT NULL DROP TABLE #Objects; --SELECT * FROM #Objects
 			CREATE TABLE #Objects (
 				UniqueObjectID		int IDENTITY(1,1)	NOT NULL,
-				[Database]			nvarchar(128)		NOT NULL,
-				SchemaName			nvarchar(32)		NOT NULL,
-				ObjectName			varchar(512)		NOT NULL,
-				[Type_Desc]			varchar(100)		NOT NULL,
-				[Definition]		varchar(MAX)			NULL,
+				[Database]			sysname				NOT NULL,
+				SchemaName			sysname				NOT NULL,
+				ObjectName			sysname				NOT NULL,
+				[Type_Desc]			sysname				NOT NULL,
+				[Definition]		nvarchar(MAX)			NULL,
 				-- Columns used for processing and output
 				ContentMatchType	varchar(10)				NULL,
 				NameMatchType		varchar(10)				NULL,
-				FilePath			varchar(512)			NULL,
-				QuickScript			varchar(512)			NULL,
+				FilePath			nvarchar(512)			NULL,
+				QuickScript			nvarchar(512)			NULL,
 				DefinitionXML		xml						NULL,
 			);
 		END;
 
 		IF OBJECT_ID('tempdb..#Columns') IS NOT NULL DROP TABLE #Columns; --SELECT * FROM #Columns
 		CREATE TABLE #Columns (
-			[Database]		nvarchar(128)		NOT NULL,
-			SchemaName		nvarchar(32)		NOT NULL,
-			TableName		sysname				NOT NULL,
-			ColumnName		sysname				NOT NULL,
-			DataType		nvarchar(128)		NOT NULL,
-			[MaxLength]		int						NULL,
-			[Precision]		int						NULL,
-			Scale			int						NULL,
+			[Database]		sysname		NOT NULL,
+			SchemaName		sysname		NOT NULL,
+			TableName		sysname		NOT NULL,
+			ColumnName		sysname		NOT NULL,
+			DataType		sysname		NOT NULL,
+			[MaxLength]		int				NULL,
+			[Precision]		int				NULL,
+			Scale			int				NULL,
 			-- Columns used for processing and output
-			DataTypeStr		varchar(100)			NULL,
+			DataTypeStr		nvarchar(100)	NULL,
 		);
 
 		IF OBJECT_ID('tempdb..#JobStepContents') IS NOT NULL DROP TABLE #JobStepContents; --SELECT * FROM #JobStepContents
@@ -252,8 +263,8 @@ BEGIN;
 
 		IF OBJECT_ID('tempdb..#SQL') IS NOT NULL DROP TABLE #SQL; --SELECT * FROM #SQL
 		CREATE TABLE #SQL (
-			[Database]		nvarchar(128)		NOT NULL,
-			SQLCode			varchar(MAX)		NOT NULL,
+			[Database]	sysname			NOT NULL,
+			SQLCode		varchar(MAX)	NOT NULL,
 		);
 	END;
 	------------------------------------------------------------------------------
@@ -317,6 +328,7 @@ BEGIN;
 		BEGIN;
 			SELECT 'Job/Step - Names';
 			SELECT DBName, JobName, StepID, StepName, [Enabled], StepCode, JobID, IsRunning, NextRunDate FROM #JobStepNames_Results ORDER BY JobName, StepID;
+			RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 		END;
 		ELSE SELECT 'Job/Step - Names', 'NO RESULTS FOUND';
 		------------------------------------------------------------------------------
@@ -334,6 +346,7 @@ BEGIN;
 		BEGIN;
 			SELECT 'Job step - Contents';
 			SELECT DBName, JobName, StepID, StepName, [Enabled], StepCode, JobID, IsRunning, NextRunDate FROM #JobStepContents_Results ORDER BY JobName, StepID;
+			RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 		END;
 		ELSE SELECT 'Job step - Contents', 'NO RESULTS FOUND';
 	END;
@@ -345,7 +358,7 @@ BEGIN;
 	BEGIN;
 		--Loop through each database to grab objects
 		--TODO: Maybe in the future use sp_MSforeachdb or BrentOzar's sp_foreachdb, for now, I like not having dependent procs/functions
-		DECLARE @i int = 1, @SQL nvarchar(MAX) = '', @DB varchar(100);
+		DECLARE @i int = 1, @SQL nvarchar(MAX) = '', @DB sysname;
 		WHILE (1=1)
 		BEGIN;
 			SELECT @DB = DBName FROM @DBs WHERE ID = @i;
@@ -417,7 +430,7 @@ BEGIN;
 
 			INSERT INTO #folderStructure (TypeDesc, QuickScriptTemplate, FilenameTemplate)
 			VALUES ('SQL_STORED_PROCEDURE'				, '-- EXEC {{FQN}}'							, '{{BasePath}}\{{DatabaseName}}\StoredProcedures\{{SchemaName}}.{{ObjectName}}.StoredProcedure.sql')
-				,  ('USER_TABLE'						, '-- SELECT TOP(100) * FROM {{FQN}}'		, NULL)
+				,  ('USER_TABLE'						, '-- SELECT TOP(100) * FROM {{FQN}}'		, '{{BasePath}}\{{DatabaseName}}\Tables\{{SchemaName}}.{{ObjectName}}.Table.sql')
 				,  ('VIEW'								, '-- SELECT TOP(100) * FROM {{FQN}}'		, '{{BasePath}}\{{DatabaseName}}\Views\{{SchemaName}}.{{ObjectName}}.View.sql')
 				,  ('SQL_TABLE_VALUED_FUNCTION'			, '-- SELECT TOP(100) * FROM {{FQN}}() x'	, '{{BasePath}}\{{DatabaseName}}\Functions\Table-valued Functions\{{SchemaName}}.{{ObjectName}}.UserDefinedFunction.sql')
 				,  ('SQL_INLINE_TABLE_VALUED_FUNCTION'	, '-- SELECT TOP(100) * FROM {{FQN}}() x'	, '{{BasePath}}\{{DatabaseName}}\Functions\Table-valued Functions\{{SchemaName}}.{{ObjectName}}.UserDefinedFunction.sql')
@@ -460,9 +473,24 @@ BEGIN;
 		IF (EXISTS(SELECT * FROM #Columns))
 		BEGIN;
 			SELECT 'Columns (partial matches)';
-		
+
+			IF (@ForceSSMSMaxColumnWidth = 1 AND (SELECT COUNT(*) FROM #Columns) > 8)
+			BEGIN;
+				INSERT INTO #Columns ([Database], SchemaName, TableName, ColumnName, DataTypeStr, DataType)
+				SELECT [Database]	= REPLICATE('.', MAX(LEN(c.[Database])))
+					, SchemaName	= REPLICATE('.', MAX(LEN(c.SchemaName)))
+					, TableName		= REPLICATE('.', MAX(LEN(c.TableName)))
+					, ColumnName	= REPLICATE('.', MAX(LEN(c.ColumnName)))
+					, DataTypeStr	= REPLICATE('.', MAX(LEN(c.DataTypeStr)))
+					, DataType		= ''
+				FROM #Columns c
+			END;
+
 			SELECT x.[Database], x.SchemaName, x.TableName, x.ColumnName, x.DataTypeStr
-			FROM #Columns x;
+			FROM #Columns x
+			ORDER BY x.[Database], x.SchemaName, x.TableName, x.ColumnName;
+			
+			RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 		END;
 		ELSE SELECT 'Columns (partial matches)', 'NO RESULTS FOUND';
 		------------------------------------------------------------------------------
@@ -481,10 +509,23 @@ BEGIN;
 		BEGIN;
 			SELECT 'Object - Names';
 
+			IF (@ForceSSMSMaxColumnWidth = 1 AND (SELECT COUNT(*) FROM #Objects WHERE NameMatchType IS NOT NULL) > 8)
+			BEGIN;
+				INSERT INTO #Objects ([Database], SchemaName, ObjectName, [Type_Desc], QuickScript, FilePath, NameMatchType)
+				SELECT REPLICATE('.', MAX(LEN(o.[Database])))
+					 , REPLICATE('.', MAX(LEN(o.SchemaName)))
+					 , REPLICATE('.', MAX(LEN(o.ObjectName)))
+					 , REPLICATE('.', MAX(LEN(o.[Type_Desc])))
+					 , '...', '...', '...'
+				FROM #Objects o
+			END;
+
 			SELECT o.[Database], o.SchemaName, o.ObjectName, o.[Type_Desc], o.QuickScript, o.FilePath
 			FROM #Objects o
 			WHERE o.NameMatchType IS NOT NULL
 			ORDER BY o.[Database], o.SchemaName, o.[Type_Desc], o.ObjectName;
+			
+			RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 		END;
 		ELSE SELECT 'Object - Names', 'NO RESULTS FOUND';
 	END;
@@ -497,14 +538,6 @@ BEGIN;
 	BEGIN;
 		RAISERROR('Object contents searches',0,1) WITH NOWAIT;
 
-		RAISERROR('	Finding whole matches',0,1) WITH NOWAIT;
-		UPDATE o SET ContentMatchType = 'Whole'
-		FROM #Objects o
-			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
-		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
-			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch  OR @ANDWholeSearch  IS NULL)
-			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch2 OR @ANDWholeSearch2 IS NULL);
-
 		IF (@WholeOnly = 0)
 		BEGIN;
 			RAISERROR('	Finding partial matches',0,1) WITH NOWAIT;
@@ -513,9 +546,17 @@ BEGIN;
 				JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
 			WHERE    o.[Definition] LIKE @PartSearch
 				AND (o.[Definition] LIKE @ANDPartSearch  OR @ANDPartSearch  IS NULL)
-				AND (o.[Definition] LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL)
-				AND o.ContentMatchType IS NULL;
+				AND (o.[Definition] LIKE @ANDPartSearch2 OR @ANDPartSearch2 IS NULL);
 		END;
+
+		RAISERROR('	Finding whole matches',0,1) WITH NOWAIT;
+		UPDATE o SET ContentMatchType = 'Whole'
+		FROM #Objects o
+			JOIN @DBs db ON db.DBName = o.[Database] --This is only necessary because of Object Caching...if user changes DB filters, we don't want to search other DB's
+		WHERE    '#'+o.[Definition]+'#' LIKE @WholeSearch
+			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch  OR @ANDWholeSearch  IS NULL)
+			AND ('#'+o.[Definition]+'#' LIKE @ANDWholeSearch2 OR @ANDWholeSearch2 IS NULL)
+			AND (@WholeOnly = 1 OR (@WholeOnly = 0 AND o.ContentMatchType = 'Partial')); -- Speeds up partial searches, no need to rescan ALL documents to look for whole matches, just scan the ones with partial matches
 		------------------------------------------------------------------------------
 		
 		------------------------------------------------------------------------------
@@ -571,12 +612,28 @@ BEGIN;
 				LEFT JOIN #ObjectReferences r ON o.UniqueObjectID = r.UniqueObjectID
 			WHERE o.ContentMatchType IS NOT NULL;
 
+			IF (@ForceSSMSMaxColumnWidth = 1 AND (SELECT COUNT(*) FROM #ObjRefResults) > 8)
+			BEGIN;
+			INSERT INTO #ObjRefResults ([Database], SchemaName, ObjectName, [Type_Desc], MatchQuality, [Label], Ref_Name, Ref_Type, QuickScript, DefinitionXML, FilePath, Ref_FilePath)
+				SELECT REPLICATE('.', MAX(LEN(x.[Database])))
+					 , REPLICATE('.', MAX(LEN(x.SchemaName)))
+					 , REPLICATE('.', MAX(LEN(x.ObjectName)))
+					 , REPLICATE('.', MAX(LEN(x.[Type_Desc])))
+					 , '...', '...'
+					 , REPLICATE('.', MAX(LEN(x.Ref_Name)))
+					 , REPLICATE('.', MAX(LEN(x.Ref_Type)))
+					 , '...', '...', '...', '...'
+				FROM #ObjRefResults x
+			END;
+
 			SELECT @SQL = '
 				SELECT x.[Database], x.SchemaName, x.ObjectName, x.[Type_Desc], x.MatchQuality'+IIF(@FindReferences = 1,', x.[Label], x.Ref_Name, x.Ref_Type','')+', x.QuickScript, x.DefinitionXML, x.FilePath'+IIF(@FindReferences = 1, ', x.Ref_FilePath','')
 				+' FROM #ObjRefResults x'
 			--	+' WHERE x.ObjectName NOT LIKE '''+@Search+''''
 				+' ORDER BY x.[Database], x.SchemaName, x.[Type_Desc], x.ObjectName;';
 			EXEC sys.sp_executesql @statement = @SQL;
+
+			RAISERROR('',0,1) WITH NOWAIT; -- Flush output
 		END;
 		ELSE SELECT 'Object - Contents', 'NO RESULTS FOUND';
 	END;
