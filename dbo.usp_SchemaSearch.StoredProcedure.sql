@@ -10,11 +10,11 @@
 		@SearchObjContents			= 1,					-- Whether or not you want to search the actual code of a proc, function, view, etc
 		@ANDSearch					= NULL,					-- Second search criteria
 		@ANDSearch2					= NULL,					-- Third search criteria
-		@WholeOnly					= 1,					-- Exclude partial matches...for example, a search of "Entity" will not match with "EntityOpportunity"
+		@WholeOnly					= 1,					-- Exclude partial matches...for example, a search of "Customer" will not match with "CustomerOrders", it will only return "whole" matches, aka, must be surrounded by whitespace or nothing.
 		@BaseFilePath				= 'C:\PathToFiles'		-- Provides a base path of where your files are stored, for example, git or SVN --TODO: currently, it's based on the folder/file structure that I like to use. Maybe in the future it can be parameter or table driven
 	--Advanced/Beta features:
 		@FindReferences				= 0,					-- Warning...this can take a while to run -- Dependent on @SearchObjContents = 1...Provides a first level dependency. Finds all places where each of your search results are mentioned
-		@CacheObjects				= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter
+		@CacheObjects				= 1,					-- Allows you to cache the object definitions to a temp table in your current session. Helps if you are trying to run this many times over and over with no DB filter -- Warning, if a filter is applied then removed or changed, the "cache" is sticky and won't update. You'll have to drop it first.
 		@DBIncludeFilterList		= 'Test%',				-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Include only matching DB's
 		@DBExcludeFilterList		= '%[_]Old,%[_]Backup'	-- Advanced Database filter...you can provde a comma separated list of LIKE statements to Exclude any matching DB's
 		@ForceSSMSMaxColumnWidth	= 0						-- Force SSMS to adjust the column width to be that of the widest value in the dataset (up to 50 characters)
