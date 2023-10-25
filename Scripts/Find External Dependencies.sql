@@ -1,3 +1,14 @@
+/* NOTES:
+	Needs to be updated to include the list of external database references.
+
+	In order to do this, need to restructure the query so that it's not using DISTINCT.
+
+	Instead needs to be using a GROUP BY, and then maybe use STRING_AGG and STRING_SPLIT
+	to expand, check, update, sort and concat for each iteration of the loop.
+
+	Otherwise it will cause the dataset to increase in size which kills the recursion.
+*/
+
 WITH find_dependencies AS (
 	-- List of objects referencing an external database
 	-- Root node
