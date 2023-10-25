@@ -1,5 +1,20 @@
-DECLARE @dto datetimeoffset, @dt2 datetime2, @dt datetime, @sdt smalldatetime, @d date, @t time;
-SELECT @dto = SYSDATETIMEOFFSET(), @dt2 = @dto, @dt = @dto, @sdt = @dto, @d = @dto, @t = @dto;
+/*	Builds a table of all possible formatting options using CONVERT and FORMAT
+	Useful for looking up what code you want to use to format your date values. */
+
+DECLARE @dto	datetimeoffset,
+		@dt2	datetime2,
+		@dt		datetime,
+		@sdt	smalldatetime,
+		@d		date,
+		@t		time;
+
+SELECT @dto	= SYSDATETIMEOFFSET()
+	, @dt2	= @dto
+	, @dt	= @dto
+	, @sdt	= @dto
+	, @d	= @dto
+	, @t	= @dto;
+
 WITH cte_tally AS (SELECT ID = ROW_NUMBER() OVER (ORDER BY (SELECT 1)) FROM sys.messages)
 SELECT x.FormatFunction, x.FormatCode, x.[datetimeoffset], x.[datetime2], x.[datetime], x.[smalldatetime], x.[date], x.[time]
 FROM (
@@ -39,4 +54,4 @@ FROM (
     WHERE (t.ID BETWEEN 65 AND 90 OR t.ID BETWEEN 97 AND 122)
         AND COALESCE(x.[datetimeoffset], x.[datetime2], x.[datetime], x.[smalldatetime], x.[date], x.[time]) IS NOT NULL
 ) x
-ORDER BY x.FormatFunction, IIF(x.FormatFunction = N'FORMAT', x.FormatCode, NULL), x.ID
+ORDER BY x.FormatFunction, IIF(x.FormatFunction = N'FORMAT', x.FormatCode, NULL), x.ID;
