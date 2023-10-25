@@ -53,7 +53,7 @@ FROM cte_indexes i
 		Default plan tries to use a nested loop join taking 26 seconds to run.
 		HASH joins won testing; Reducing runtime to ~3 seconds and significantly reducing logical reads and CPU time. */
 	LEFT HASH JOIN cte_index_size ixs ON ixs.[object_id] = i.[object_id] AND ixs.index_id = i.index_id
-	LEFT HASH JOIN sys.dm_db_index_usage_stats ius ON ius.database_id = 11 AND ius.[object_id] = i.[object_id] AND ius.index_id = i.index_id
+	LEFT HASH JOIN sys.dm_db_index_usage_stats ius ON ius.database_id = DB_ID() AND ius.[object_id] = i.[object_id] AND ius.index_id = i.index_id
 	LEFT JOIN cte_fk_index_counts fkc ON fkc.[object_id] = i.[object_id] AND fkc.index_id = i.index_id
 	CROSS APPLY (SELECT SQLServerStartTime = osi.sqlserver_start_time FROM sys.dm_os_sys_info osi) ss
 	CROSS APPLY (SELECT OffsetMinutes = DATEPART(TZOFFSET, SYSDATETIMEOFFSET())) tz /* Get the system TZ offset */
