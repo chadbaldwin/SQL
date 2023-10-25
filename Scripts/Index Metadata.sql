@@ -1,3 +1,6 @@
+/* Recommend using NOLOCK; it tends to deadlock if a rebuilds are running */
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+GO
 WITH cte_indexes AS (
 	/* Get list of indexes we want to export */
 	SELECT o.[object_id], i.index_id
