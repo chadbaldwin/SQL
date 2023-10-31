@@ -5,6 +5,7 @@ WITH cte_indexes AS (
 	/* Get list of indexes we want to export */
 	SELECT o.[object_id], i.index_id
 		/* Name info */
+		, ServerName			= @@SERVERNAME
 		, DatabaseName			= DB_NAME()
 		, SchemaName			= s.[name]
 		, ObjectName			= o.[name]
@@ -33,7 +34,7 @@ WITH cte_indexes AS (
 	FROM sys.dm_db_partition_stats s
 	GROUP BY s.[object_id], s.index_id
 ), cte_fk_index_counts AS (
-	/* FK's don't have to reference a PK, they can reference any unique index */
+	/* FKs dont have to reference a PK, they can reference any unique index */
 	SELECT [object_id]			= fk.referenced_object_id
 		, index_id				= fk.key_index_id
 		, FKReferenceCount		= COUNT(*)
@@ -41,7 +42,7 @@ WITH cte_indexes AS (
 	GROUP BY fk.referenced_object_id, fk.key_index_id
 )
 SELECT i.[object_id], i.index_id, StatsCollectionTimeUTC = GETUTCDATE(), x.SQLServerStartTimeUTC
-	/* Name info */			, i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
+	/* Name info */			, i.ServerName, i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
 	/* Object Metadata */	, i.ObjectType, x.ObjectCreateDate
 	/* Index Metadata */	, i.IndexType, i.IsUnique, i.IsPrimaryKey, i.IsUniqueConstraint, i.IsDisabled, i.IsHypothetical, i.HasFilter
 							, FKReferenceCount = COALESCE(fkc.FKReferenceCount, 0)
