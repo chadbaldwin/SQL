@@ -53,7 +53,8 @@ SELECT @output = (
 										'expiredate','filename','hash','index','level','location','message','minutes','month','monthname','name','or','order',
 										'password','path','population','port','priority','provider','quarter','rank','read','replace','role','row','rowcount',
 										'sequence','server','source','state','status','subject','text','trim','type','uid','url','user','value','version','weekday',
-										'year','object_id','schema_id','type_desc','lock_escalation','durability','messages','weight'
+										'year','object_id','schema_id','type_desc','lock_escalation','durability','messages','weight','ignore_dup_key','allow_row_locks',
+										'allow_page_locks','compression_delay','partition_id'
 									) OR x.[name] LIKE '%[^a-z0-9_#]%' OR x.[name] LIKE '[0-9]%', QUOTENAME(x.[name]), x.[name])
 			) y
 		WHERE x.is_hidden = 0
