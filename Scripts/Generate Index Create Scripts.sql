@@ -1,6 +1,11 @@
-DECLARE @ScriptIfNotExists bit = 1;
+DECLARE @ScriptIfNotExists	bit	= 1,
+		@SqlIfNotExists		nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Schema}}.{{Object}}''), ''{{Index}}'', ''IndexId'') IS NULL)',
+		@SqlDisable			nvarchar(MAX) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
+		@SqlRebuild			nvarchar(MAX) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD' + IIF(SERVERPROPERTY('EngineEdition') = 3, ' WITH (ONLINE=ON)', ''),
+		@SqlDrop			nvarchar(MAX) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};';
+
 SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
-	, IndexDefinition = IIF(@ScriptIfNotExists = 1, e.IfNotExists+CHAR(13)+CHAR(10)+CHAR(9), NULL) + CONCAT_WS(' '
+	, CreateScript = IIF(@ScriptIfNotExists = 1, s.IfNotExists+CHAR(13)+CHAR(10)+CHAR(9), '') + CONCAT_WS(' '
 		, 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName
 		, 'ON', qn.SchemaName+'.'+qn.ObjectName
 		, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'
@@ -8,18 +13,21 @@ SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
 		, IIF(ds.is_default = 0, 'ON '+QUOTENAME(ds.[name]), NULL)
 	--	, 'FILESTREAM_ON {{FilestreamGroup|PartitionName|"NULL"}}'
 	)+';'
+	, s.DisableScript, s.RebuildScript, s.DropScript
 FROM sys.indexes i
 	JOIN sys.objects o ON o.[object_id] = i.[object_id]
 	JOIN sys.stats st ON st.[object_id] = i.[object_id] AND st.stats_id = i.index_id
 	-- Disabled indexes do not have sys.partitions records
-	LEFT JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id AND p.partition_number = 1 -- Partitioning not yet supported
+	LEFT HASH JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id AND p.partition_number = 1 -- Partitioning not yet supported
 	JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
 	CROSS APPLY (SELECT SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]) n
 	CROSS APPLY (SELECT SchemaName = QUOTENAME(n.SchemaName), ObjectName = QUOTENAME(n.ObjectName), IndexName = QUOTENAME(n.IndexName)) qn
 	CROSS APPLY (
-		SELECT IfNotExists = REPLACE(REPLACE(REPLACE('IF (INDEXPROPERTY(OBJECT_ID(''{{Schema}}.{{Object}}''), ''{{Index}}'', ''IndexId'') IS NULL)'
-				,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',n.IndexName)
-	) e
+		SELECT IfNotExists		= REPLACE(REPLACE(REPLACE(@SqlIfNotExists	,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',n.IndexName)
+			,  DisableScript	= REPLACE(REPLACE(REPLACE(@SqlDisable		,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',qn.IndexName)
+			,  RebuildScript	= REPLACE(REPLACE(REPLACE(@SqlRebuild		,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',qn.IndexName)
+			,  DropScript		= REPLACE(REPLACE(REPLACE(@SqlDrop			,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',qn.IndexName)
+	) s
 	CROSS APPLY (
 		SELECT KeyCols = STRING_AGG(IIF(ic.is_included_column = 0, x.Col, NULL), ', ')
 			, InclCols = STRING_AGG(IIF(ic.is_included_column = 1, x.Col, NULL), ', ')
@@ -47,3 +55,4 @@ FROM sys.indexes i
 WHERE i.[type] > 0 -- Exclude heaps
 	AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 -- PK's and Unique constraints have their own syntax
 	AND o.is_ms_shipped = 0
+ORDER BY n.SchemaName, n.ObjectName, n.IndexName
