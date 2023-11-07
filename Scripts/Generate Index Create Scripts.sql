@@ -32,7 +32,8 @@ FROM sys.indexes i
 				,  ('ALLOW_ROW_LOCKS'		, IIF(i.[allow_row_locks] = 1	, NULL, 'OFF'))
 				,  ('ALLOW_PAGE_LOCKS'		, IIF(i.[allow_page_locks] = 1	, NULL, 'OFF'))
 				,  ('DATA_COMPRESSION'		, NULLIF(p.[data_compression_desc] COLLATE DATABASE_DEFAULT, 'NONE')) -- Only works for non-partitioned tables
-			--	,  ('XML_COMPRESSION'		, NULL) -- Haven't figured it out yet
+				,  ('XML_COMPRESSION'		, NULL) -- Haven't figured it out yet
+				-- Create options
 				,  ('ONLINE'				, IIF(SERVERPROPERTY('EngineEdition') = 3, 'ON', NULL)) -- 3 = Eval/Dev/Enterprise
 		) opt(n,v)
 		WHERE opt.v IS NOT NULL -- Exclude default values
