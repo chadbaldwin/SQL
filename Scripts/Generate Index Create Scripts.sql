@@ -1,16 +1,15 @@
 DECLARE @ScriptIfNotExists	bit	= 1,
-		@SqlIfNotExists		nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Schema}}.{{Object}}''), ''{{Index}}'', ''IndexId'') IS NULL)',
+		@EnableOnline		bit = IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0);
+DECLARE	@SqlIfNotExists		nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Schema}}.{{Object}}''), ''{{Index}}'', ''IndexId'') IS NULL)',
 		@SqlDisable			nvarchar(MAX) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
-		@SqlRebuild			nvarchar(MAX) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD' + IIF(SERVERPROPERTY('EngineEdition') = 3, ' WITH (ONLINE=ON)', ''),
+		@SqlRebuild			nvarchar(MAX) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD' + IIF(@EnableOnline = 1, ' WITH (ONLINE=ON)', ''),
 		@SqlDrop			nvarchar(MAX) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};';
 
 SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
 	, CreateScript = IIF(@ScriptIfNotExists = 1, s.IfNotExists+CHAR(13)+CHAR(10)+CHAR(9), '') + CONCAT_WS(' '
-		, 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName
-		, 'ON', qn.SchemaName+'.'+qn.ObjectName
-		, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'
-		, 'WHERE '+i.filter_definition, 'WITH ('+x.Options+')'
-		, IIF(ds.is_default = 0, 'ON '+QUOTENAME(ds.[name]), NULL)
+		, 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName		-- CREATE UNIQUE CLUSTERED INDEX [IX_Foo_Bar_Baz]
+		, 'ON', qn.SchemaName+'.'+qn.ObjectName, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'							-- ON [dbo].[Foo] ([Bar]) INCLUDE ([Baz])
+		, 'WHERE '+i.filter_definition, 'WITH ('+x.Options+')', IIF(ds.is_default = 0, 'ON '+QUOTENAME(ds.[name]), NULL)	-- WHERE (Val >= 100) WITH (ONLINE=ON) ON [Secondary]
 	--	, 'FILESTREAM_ON {{FilestreamGroup|PartitionName|"NULL"}}'
 	)+';'
 	, s.DisableScript, s.RebuildScript, s.DropScript
@@ -48,7 +47,7 @@ FROM sys.indexes i
 				,  ('DATA_COMPRESSION'		, NULLIF(p.[data_compression_desc] COLLATE DATABASE_DEFAULT, 'NONE')) -- Only works for non-partitioned tables
 				,  ('XML_COMPRESSION'		, NULL) -- Haven't figured it out yet
 				-- Create options
-				,  ('ONLINE'				, IIF(SERVERPROPERTY('EngineEdition') = 3, 'ON', NULL)) -- 3 = Eval/Dev/Enterprise
+				,  ('ONLINE'				, IIF(@EnableOnline = 1			, 'ON', NULL)) -- 3 = Eval/Dev/Enterprise
 		) opt(n,v)
 		WHERE opt.v IS NOT NULL -- Exclude default values
 	) x
