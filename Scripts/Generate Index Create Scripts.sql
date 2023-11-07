@@ -9,7 +9,7 @@ SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
 	, SuggestedName = REPLACE(REPLACE('IX_{{Object}}_{{KeyCols}}','{{Object}}',n.ObjectName),'{{KeyCols}}',kc.KeyColsName)
 	, CreateScript = IIF(@ScriptIfNotExists = 1, s.IfNotExists+CHAR(13)+CHAR(10)+CHAR(9), '') + CONCAT_WS(' '
 		, 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName		-- CREATE UNIQUE CLUSTERED INDEX [IX_Foo_Bar_Baz]
-		, 'ON', qn.SchemaName+'.'+qn.ObjectName, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'							-- ON [dbo].[Foo] ([Bar]) INCLUDE ([Baz])
+		, 'ON', qn.SchemaName+'.'+qn.ObjectName, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'							-- ON [dbo].[Foo] ([Bar]) INCLUDE ([Baz], [Qux])
 		, 'WHERE '+i.filter_definition, 'WITH ('+x.Options+')', IIF(ds.is_default = 0, 'ON '+QUOTENAME(ds.[name]), NULL)	-- WHERE (Val >= 100) WITH (ONLINE=ON) ON [Secondary]
 	--	, 'FILESTREAM_ON {{FilestreamGroup|PartitionName|"NULL"}}'
 	)+';'
