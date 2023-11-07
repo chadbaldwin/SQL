@@ -1,5 +1,6 @@
-SELECT n.SchemaName, n.ObjectName, n.IndexName
-	, IndexDefinition = CONCAT_WS(' '
+DECLARE @ScriptIfNotExists bit = 1;
+SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
+	, IndexDefinition = IIF(@ScriptIfNotExists = 1, e.IfNotExists+CHAR(13)+CHAR(10)+CHAR(9), NULL) + CONCAT_WS(' '
 		, 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName
 		, 'ON', qn.SchemaName+'.'+qn.ObjectName
 		, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'
@@ -10,10 +11,15 @@ SELECT n.SchemaName, n.ObjectName, n.IndexName
 FROM sys.indexes i
 	JOIN sys.objects o ON o.[object_id] = i.[object_id]
 	JOIN sys.stats st ON st.[object_id] = i.[object_id] AND st.stats_id = i.index_id
-	JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id AND p.partition_number = 1 -- Partitioning not yet supported
+	-- Disabled indexes do not have sys.partitions records
+	LEFT JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id AND p.partition_number = 1 -- Partitioning not yet supported
 	JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
 	CROSS APPLY (SELECT SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]) n
 	CROSS APPLY (SELECT SchemaName = QUOTENAME(n.SchemaName), ObjectName = QUOTENAME(n.ObjectName), IndexName = QUOTENAME(n.IndexName)) qn
+	CROSS APPLY (
+		SELECT IfNotExists = REPLACE(REPLACE(REPLACE('IF (INDEXPROPERTY(OBJECT_ID(''{{Schema}}.{{Object}}''), ''{{Index}}'', ''IndexId'') IS NULL)'
+				,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',n.IndexName)
+	) e
 	CROSS APPLY (
 		SELECT KeyCols = STRING_AGG(IIF(ic.is_included_column = 0, x.Col, NULL), ', ')
 			, InclCols = STRING_AGG(IIF(ic.is_included_column = 1, x.Col, NULL), ', ')
@@ -38,5 +44,6 @@ FROM sys.indexes i
 		) opt(n,v)
 		WHERE opt.v IS NOT NULL -- Exclude default values
 	) x
-WHERE i.is_primary_key = 0 AND i.is_unique_constraint = 0 -- PK's and Unique constraints have their own syntax
+WHERE i.[type] > 0 -- Exclude heaps
+	AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 -- PK's and Unique constraints have their own syntax
 	AND o.is_ms_shipped = 0
