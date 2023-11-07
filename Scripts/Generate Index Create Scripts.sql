@@ -6,6 +6,7 @@ DECLARE	@SqlIfNotExists		nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Schem
 		@SqlDrop			nvarchar(MAX) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};';
 
 SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
+	, SuggestedName = REPLACE(REPLACE('IX_{{Object}}_{{KeyCols}}','{{Object}}',n.ObjectName),'{{KeyCols}}',kc.KeyColsName)
 	, CreateScript = IIF(@ScriptIfNotExists = 1, s.IfNotExists+CHAR(13)+CHAR(10)+CHAR(9), '') + CONCAT_WS(' '
 		, 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName		-- CREATE UNIQUE CLUSTERED INDEX [IX_Foo_Bar_Baz]
 		, 'ON', qn.SchemaName+'.'+qn.ObjectName, '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')'							-- ON [dbo].[Foo] ([Bar]) INCLUDE ([Baz])
@@ -28,10 +29,12 @@ FROM sys.indexes i
 			,  DropScript		= REPLACE(REPLACE(REPLACE(@SqlDrop			,'{{Schema}}',qn.SchemaName),'{{Object}}',qn.ObjectName),'{{Index}}',qn.IndexName)
 	) s
 	CROSS APPLY (
-		SELECT KeyCols = STRING_AGG(IIF(ic.is_included_column = 0, x.Col, NULL), ', ')
-			, InclCols = STRING_AGG(IIF(ic.is_included_column = 1, x.Col, NULL), ', ')
+		SELECT KeyCols		= STRING_AGG(IIF(ic.is_included_column = 0, x.ColText, NULL), ', ')
+			,  KeyColsName	= STRING_AGG(IIF(ic.is_included_column = 0, cn.ColName, NULL), '_')
+			,  InclCols		= STRING_AGG(IIF(ic.is_included_column = 1, x.ColText, NULL), ', ')
 		FROM sys.index_columns ic
-			CROSS APPLY (SELECT Col = CONCAT_WS(' ', QUOTENAME(COL_NAME(ic.[object_id], ic.column_id)), IIF(ic.is_descending_key = 1, 'DESC', NULL))) x
+			CROSS APPLY (SELECT ColName = COL_NAME(ic.[object_id], ic.column_id)) cn
+			CROSS APPLY (SELECT ColText = CONCAT_WS(' ', QUOTENAME(cn.ColName), IIF(ic.is_descending_key = 1, 'DESC', NULL))) x
 		WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
 	) kc
 	CROSS APPLY (
