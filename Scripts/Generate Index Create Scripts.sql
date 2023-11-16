@@ -49,9 +49,9 @@ FROM sys.indexes i
             ,  DropScript    = REPLACE(REPLACE(REPLACE(@SqlDrop       , '{{Schema}}', qn.SchemaName), '{{Object}}', qn.ObjectName), '{{Index}}', qn.IndexName)
     ) s
     CROSS APPLY (
-        SELECT KeyCols       = STRING_AGG(IIF(ic.is_included_column = 0, t.ColText, NULL), ', ')
-            ,  KeyColsName   = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName, NULL), '_')
-            ,  InclCols      = STRING_AGG(IIF(ic.is_included_column = 1, t.ColText, NULL), ', ')
+        SELECT KeyCols       = STRING_AGG(IIF(ic.is_included_column = 0, t.ColText, NULL), ', ') WITHIN GROUP (ORDER BY ic.index_column_id)
+            ,  KeyColsName   = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName, NULL), '_')	 WITHIN GROUP (ORDER BY ic.index_column_id)
+            ,  InclCols      = STRING_AGG(IIF(ic.is_included_column = 1, t.ColText, NULL), ', ') WITHIN GROUP (ORDER BY ic.index_column_id)
         FROM sys.index_columns ic
             CROSS APPLY (SELECT ColName = COL_NAME(ic.[object_id], ic.column_id)) n
             CROSS APPLY (SELECT ColText = CONCAT_WS(' ', QUOTENAME(n.ColName), IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
