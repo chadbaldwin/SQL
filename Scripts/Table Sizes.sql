@@ -29,7 +29,7 @@ FROM (
 			, TotalKB			= SUM(a.total_pages) * 8.0
 			, UsedKB			= SUM(a.used_pages) * 8.0
 			, UnusedKB			= (SUM(a.total_pages) - SUM(a.used_pages)) * 8.0
-			, CompressionType	= CHOOSE(MAX(p.[data_compression])+1, 'NONE', 'ROW', 'PAGE')
+			, CompressionType	= CHOOSE(MAX(p.[data_compression])+1, 'NONE', 'ROW', 'PAGE','COLUMNSTORE')
 		FROM sys.tables t
 			JOIN sys.indexes i ON t.[object_id] = i.[object_id]
 			JOIN sys.partitions p ON i.[object_id] = p.[object_id] AND i.index_id = p.index_id
