@@ -13,14 +13,14 @@ FROM sys.indexes i
 		SELECT KeyCols     = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
 			,  InclCols    = STRING_AGG(IIF(ic.is_included_column = 1, ic.column_id, NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
 			-- Only supports tables with up to 186 columns....after that you're gonna have to edit the query yourself
-			-- Magic number '62' - bigint is 2^63-1 - so 62 is the highest we can go
-			,  KeyBitmap1  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*0 AND ic.column_id <= 62*1, POWER(@2, ic.column_id - 62*0), 0)))
-			,  KeyBitmap2  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*1 AND ic.column_id <= 62*2, POWER(@2, ic.column_id - 62*1), 0)))
-			,  KeyBitmap3  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*2 AND ic.column_id <= 62*3, POWER(@2, ic.column_id - 62*2), 0)))
+			-- Magic number '62' - bigint is 2^63-1 - so 62 is the highest we can go. Someone please explain to me why binary/varbinary datatypes don't support bitwise operators.
+			,  KeyBitmap1  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*0 AND ic.column_id <= 62*1, POWER(@2, ic.column_id - 62*0), 0))) --   0 < column_id <=  62
+			,  KeyBitmap2  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*1 AND ic.column_id <= 62*2, POWER(@2, ic.column_id - 62*1), 0))) --  62 < column_id <= 124
+			,  KeyBitmap3  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*2 AND ic.column_id <= 62*3, POWER(@2, ic.column_id - 62*2), 0))) -- 124 < column_id <= 186
 			--
-			,  InclBitmap1 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*0 AND ic.column_id <= 62*1, POWER(@2, ic.column_id - 62*0), 0)))
-			,  InclBitmap2 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*1 AND ic.column_id <= 62*2, POWER(@2, ic.column_id - 62*1), 0)))
-			,  InclBitmap3 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*2 AND ic.column_id <= 62*3, POWER(@2, ic.column_id - 62*2), 0)))
+			,  InclBitmap1 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*0 AND ic.column_id <= 62*1, POWER(@2, ic.column_id - 62*0), 0))) --   0 < column_id <=  62
+			,  InclBitmap2 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*1 AND ic.column_id <= 62*2, POWER(@2, ic.column_id - 62*1), 0))) --  62 < column_id <= 124
+			,  InclBitmap3 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*2 AND ic.column_id <= 62*3, POWER(@2, ic.column_id - 62*2), 0))) -- 124 < column_id <= 186
 		FROM sys.index_columns ic
 		WHERE ic.[object_id] = i.[object_id]
 			AND ic.index_id = i.index_id
@@ -32,7 +32,7 @@ WHERE i.index_id >= 2 -- non-clustered only
 
 SELECT x.[object_id], x.index_id
 	, x.SchemaName, x.ObjectName, x.IndexName, x.ObjectType, x.IndexType
-	, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter
+	, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter, x.filter_definition
 	, N'█' [██], x.KeyCols, x.InclCols
 --	, x.KeyBitmap1, x.KeyBitmap2, x.InclBitmap1, x.InclBitmap2
 	, N'█' [██]
