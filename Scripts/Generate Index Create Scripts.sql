@@ -41,6 +41,7 @@ FROM sys.indexes i
     JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     CROSS APPLY (SELECT SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]) n
     CROSS APPLY (SELECT SchemaName = QUOTENAME(n.SchemaName), ObjectName = QUOTENAME(n.ObjectName), IndexName = QUOTENAME(n.IndexName)) qn
+    -- Create the base scripts for each section
     CROSS APPLY (
         SELECT IfNotExists   = REPLACE(REPLACE(REPLACE(@SqlIfNotExists, '{{Schema}}', qn.SchemaName), '{{Object}}', qn.ObjectName), '{{Index}}', n.IndexName)
             ,  IfExists      = REPLACE(REPLACE(REPLACE(@SqlIfExists   , '{{Schema}}', qn.SchemaName), '{{Object}}', qn.ObjectName), '{{Index}}', n.IndexName)
@@ -89,13 +90,13 @@ FROM sys.indexes i
     ) c
     CROSS APPLY (
         SELECT IfExists    = IIF(@ScriptIfExists    = 1, s.IfExists    + @crlf + 'BEGIN;' + @crlf, '')
-                           + IIF(@ScriptIfExists    = 1, @tab, '') + IIF(@AddOutputMessages = 1, @SqlOutputMessage, '') + @crlf
+                           + IIF(@ScriptIfExists    = 1, @tab, '') + IIF(@AddOutputMessages = 1, @SqlOutputMessage + @crlf, '')
                            + IIF(@ScriptIfExists    = 1, @tab, '') + '{{Script}}'
                            + IIF(@ScriptIfExists    = 1, @crlf + 'END;', '')
                            + c.BatchSeparator
 
             ,  IfNotExists = IIF(@ScriptIfNotExists = 1, s.IfNotExists + @crlf + 'BEGIN;' + @crlf, '')
-                           + IIF(@ScriptIfExists    = 1, @tab, '') + IIF(@AddOutputMessages = 1, @SqlOutputMessage, '') + @crlf
+                           + IIF(@ScriptIfNotExists = 1, @tab, '') + IIF(@AddOutputMessages = 1, @SqlOutputMessage + @crlf, '')
                            + IIF(@ScriptIfNotExists = 1, @tab, '') + '{{Script}}'
                            + IIF(@ScriptIfNotExists = 1, @crlf + 'END;', '')
                            + c.BatchSeparator
