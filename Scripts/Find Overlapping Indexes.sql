@@ -4,8 +4,9 @@ IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT *
 SELECT i.[object_id], i.index_id
 	, SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]
 	, ObjectType = o.[type_desc], IndexType = i.[type_desc]
-	, i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, i.is_hypothetical, i.has_filter, filter_definition = COALESCE(i.filter_definition,'')
-	, x.KeyCols, x.InclCols, x.KeyBitmap1, x.KeyBitmap2, x.InclBitmap1, x.InclBitmap2, x.InclBitmap3
+	, i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, i.is_hypothetical, i.has_filter
+	, filter_definition = COALESCE(i.filter_definition,'')
+	, x.KeyCols, x.InclCols, x.InclBitmap1, x.InclBitmap2, x.InclBitmap3
 INTO #tmp_idx
 FROM sys.indexes i
 	JOIN sys.objects o ON o.[object_id] = i.[object_id]
@@ -13,14 +14,10 @@ FROM sys.indexes i
 		SELECT KeyCols     = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
 			,  InclCols    = STRING_AGG(IIF(ic.is_included_column = 1, ic.column_id, NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
 			-- Only supports tables with up to 186 columns....after that you're gonna have to edit the query yourself
-			-- Magic number '62' - bigint is 2^63-1 - so 62 is the highest we can go. Someone please explain to me why binary/varbinary datatypes don't support bitwise operators.
-			,  KeyBitmap1  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*0 AND ic.column_id <= 62*1, POWER(@2, ic.column_id - 62*0), 0))) --   0 < column_id <=  62
-			,  KeyBitmap2  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*1 AND ic.column_id <= 62*2, POWER(@2, ic.column_id - 62*1), 0))) --  62 < column_id <= 124
-			,  KeyBitmap3  = CONVERT(bigint, SUM(IIF(ic.is_included_column = 0 AND ic.column_id > 62*2 AND ic.column_id <= 62*3, POWER(@2, ic.column_id - 62*2), 0))) -- 124 < column_id <= 186
-			--
-			,  InclBitmap1 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*0 AND ic.column_id <= 62*1, POWER(@2, ic.column_id - 62*0), 0))) --   0 < column_id <=  62
-			,  InclBitmap2 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*1 AND ic.column_id <= 62*2, POWER(@2, ic.column_id - 62*1), 0))) --  62 < column_id <= 124
-			,  InclBitmap3 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND ic.column_id > 62*2 AND ic.column_id <= 62*3, POWER(@2, ic.column_id - 62*2), 0))) -- 124 < column_id <= 186
+			-- Magic number '63' - bigint is 2^63-1 - so 63-1 is the highest we can go. Someone please explain to me why binary/varbinary datatypes don't support bitwise operators.
+			,  InclBitmap1 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND (ic.column_id > 63*0 AND ic.column_id <= 63*1), POWER(@2, ic.column_id-1 - 63*0), 0))) --   0 < column_id <=  63
+			,  InclBitmap2 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND (ic.column_id > 63*1 AND ic.column_id <= 63*2), POWER(@2, ic.column_id-1 - 63*1), 0))) --  63 < column_id <= 126
+			,  InclBitmap3 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND (ic.column_id > 63*2 AND ic.column_id <= 63*3), POWER(@2, ic.column_id-1 - 63*2), 0))) -- 126 < column_id <= 189
 		FROM sys.index_columns ic
 		WHERE ic.[object_id] = i.[object_id]
 			AND ic.index_id = i.index_id
@@ -34,18 +31,15 @@ SELECT x.[object_id], x.index_id
 	, x.SchemaName, x.ObjectName, x.IndexName, x.ObjectType, x.IndexType
 	, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter, x.filter_definition
 	, N'█' [██], x.KeyCols, x.InclCols
---	, x.KeyBitmap1, x.KeyBitmap2, x.InclBitmap1, x.InclBitmap2
-	, N'█' [██]
-	, y.IndexName
+	, N'█' [██], y.IndexName
 	, MatchDescription = CASE
 							WHEN z.ExactKeys = 1 AND z.ExactIncl = 1 THEN 'exact match'
 							ELSE CHOOSE(z.ExactKeys+1, 'covers', 'exact') + ' keys' + ', ' + COALESCE(CHOOSE(z.ExactIncl+1, 'covers', 'exact'), 'no') + ' includes'
 						END
 	, z.ExactKeys, z.ExactIncl, y.KeyCols, y.InclCols
---	, y.KeyBitmap1, y.KeyBitmap2, y.InclBitmap1, y.InclBitmap2
 FROM #tmp_idx x
 	CROSS APPLY (
-		SELECT i.IndexName, i.KeyCols, i.InclCols, i.KeyBitmap1, i.KeyBitmap2, i.InclBitmap1, i.InclBitmap2
+		SELECT i.IndexName, i.KeyCols, i.InclCols, i.InclBitmap1, i.InclBitmap2
 		FROM #tmp_idx i
 		WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id
 			AND i.is_unique = x.is_unique AND i.has_filter = x.has_filter AND i.filter_definition = x.filter_definition
