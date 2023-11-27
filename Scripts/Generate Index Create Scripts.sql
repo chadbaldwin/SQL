@@ -26,8 +26,9 @@ DECLARE @SqlIfNotExists     nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Sc
         @SqlOutputMessage   nvarchar(MAX) = N'RAISERROR(''Execute: {{Message}}'',0,1) WITH NOWAIT;',
         @SqlErrorMessage    nvarchar(MAX) = N'RAISERROR(''ERROR: {{Message}}'',11,1) WITH NOWAIT;';
 
-SELECT n.SchemaName, n.ObjectName, n.IndexName, i.is_disabled
-    , SuggestedName = CONCAT('IX_', n.ObjectName, '_', kc.KeyColsName)
+SELECT n.SchemaName, n.ObjectName, n.IndexName, ObjectType = o.[type_desc], IndexType = i.[type_desc], i.is_disabled, i.has_filter, kc.KeyCols, kc.InclCols, c.SuggestedName
+	, MatchesSuggestedName = CONVERT(bit, IIF(i.[name] = c.SuggestedName, 1, 0))
+	, TableRowCount = FORMAT(CONVERT(bigint, OBJECTPROPERTYEX(i.[object_id], 'Cardinality')),'N0')
     , CreateScript  = REPLACE(REPLACE(y.IfNotExists, '{{Message}}', REPLACE(c.CreateBase      ,'''','''''')), '{{Script}}', CONCAT_WS(' ', c.CreateBase, c.Cols, c.Features) + ';')
     , DropScript    = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.DropScript      ,'''','''''')), '{{Script}}', s.DropScript)
     , RebuildScript = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.RebuildScript   ,'''','''''')), '{{Script}}', CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';')
@@ -87,6 +88,7 @@ FROM sys.indexes i
                                 )
             ,  BuildOptions   = 'WITH ('+x.BuildOptions+')'
             ,  BatchSeparator = IIF(@BatchSeparator = 1, @crlf + 'GO', '') + IIF(@TrailingLineBreak = 1, @crlf+@crlf, '')
+			,  SuggestedName = CONCAT('IX_', n.ObjectName, '_', kc.KeyColsName)
     ) c
     CROSS APPLY (
         SELECT IfExists    = IIF(@ScriptIfExists    = 1, s.IfExists    + @crlf + 'BEGIN;' + @crlf, '')
@@ -102,6 +104,7 @@ FROM sys.indexes i
                            + c.BatchSeparator
     ) y
 WHERE i.[type] > 0 -- Exclude heaps
+    AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 -- PK's and Unique constraints have their own syntax
     AND o.is_ms_shipped = 0
 ORDER BY n.SchemaName, n.ObjectName, n.IndexName;
