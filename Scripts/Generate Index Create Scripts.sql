@@ -26,9 +26,10 @@ DECLARE @SqlIfNotExists     nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Sc
         @SqlOutputMessage   nvarchar(MAX) = N'RAISERROR(''Execute: {{Message}}'',0,1) WITH NOWAIT;',
         @SqlErrorMessage    nvarchar(MAX) = N'RAISERROR(''ERROR: {{Message}}'',11,1) WITH NOWAIT;';
 
-SELECT n.SchemaName, n.ObjectName, n.IndexName, ObjectType = o.[type_desc], IndexType = i.[type_desc], i.is_disabled, i.has_filter, kc.KeyCols, kc.InclCols, c.SuggestedName
-	, MatchesSuggestedName = CONVERT(bit, IIF(i.[name] = c.SuggestedName, 1, 0))
-	, TableRowCount = FORMAT(CONVERT(bigint, OBJECTPROPERTYEX(i.[object_id], 'Cardinality')),'N0')
+SELECT n.SchemaName, n.ObjectName, n.IndexName, ObjectType = o.[type_desc], IndexType = i.[type_desc], i.is_disabled, i.has_filter
+    , KeyCols = REPLACE(kc.KeyColsNQ , '{{delim}}',', '), InclCols = REPLACE(kc.InclColsNQ, '{{delim}}',', ')
+    , c.SuggestedName, MatchesSuggestedName = CONVERT(bit, IIF(i.[name] = c.SuggestedName, 1, 0))
+    , TableRowCount = FORMAT(CONVERT(bigint, OBJECTPROPERTYEX(i.[object_id], 'Cardinality')),'N0')
     , CreateScript  = REPLACE(REPLACE(y.IfNotExists, '{{Message}}', REPLACE(c.CreateBase      ,'''','''''')), '{{Script}}', CONCAT_WS(' ', c.CreateBase, c.Cols, c.Features) + ';')
     , DropScript    = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.DropScript      ,'''','''''')), '{{Script}}', s.DropScript)
     , RebuildScript = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.RebuildScript   ,'''','''''')), '{{Script}}', CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';')
@@ -51,12 +52,15 @@ FROM sys.indexes i
             ,  DropScript    = REPLACE(REPLACE(REPLACE(@SqlDrop       , '{{Schema}}', qn.SchemaName), '{{Object}}', qn.ObjectName), '{{Index}}', qn.IndexName)
     ) s
     CROSS APPLY (
-        SELECT KeyCols       = STRING_AGG(IIF(ic.is_included_column = 0, t.ColText, NULL), ', ') WITHIN GROUP (ORDER BY ic.index_column_id)
-            ,  KeyColsName   = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName, NULL), '_')	 WITHIN GROUP (ORDER BY ic.index_column_id)
-            ,  InclCols      = STRING_AGG(IIF(ic.is_included_column = 1, t.ColText, NULL), ', ') WITHIN GROUP (ORDER BY ic.index_column_id)
+        SELECT KeyColsN      = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName          , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
+            ,  KeyColsNQ     = STRING_AGG(IIF(ic.is_included_column = 0, q.ColNameQuote     , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
+            ,  KeyColsNQO    = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNameQuoteOrder, NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
+            ,  InclColsN     = STRING_AGG(IIF(ic.is_included_column = 1, n.ColName          , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
+            ,  InclColsNQ    = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNameQuote     , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
         FROM sys.index_columns ic
             CROSS APPLY (SELECT ColName = COL_NAME(ic.[object_id], ic.column_id)) n
-            CROSS APPLY (SELECT ColText = CONCAT_WS(' ', QUOTENAME(n.ColName), IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
+            CROSS APPLY (SELECT ColNameQuote = QUOTENAME(n.ColName)) q
+            CROSS APPLY (SELECT ColNameQuoteOrder = CONCAT_WS(' ', q.ColNameQuote, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
     CROSS APPLY (
@@ -80,7 +84,7 @@ FROM sys.indexes i
     ) x
     CROSS APPLY (
         SELECT CreateBase     = CONCAT_WS(' ', 'CREATE', IIF(i.is_unique = 1, 'UNIQUE', NULL), i.[type_desc] COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName, 'ON', qn.SchemaName+'.'+qn.ObjectName)
-            ,  Cols           = CONCAT_WS(' ', '('+kc.KeyCols+')', 'INCLUDE ('+kc.InclCols+')')
+            ,  Cols           = CONCAT_WS(' ', '('+REPLACE(kc.KeyColsNQO,'{{delim}}',', ')+')', 'INCLUDE ('+REPLACE(kc.InclColsNQ,'{{delim}}',', ')+')')
             ,  Features       = CONCAT_WS(' '
                                     , 'WHERE '+i.filter_definition
                                     , 'WITH ('+NULLIF(CONCAT_WS(', ', x.CreateOptions, x.BuildOptions),'')+')'
@@ -88,7 +92,7 @@ FROM sys.indexes i
                                 )
             ,  BuildOptions   = 'WITH ('+x.BuildOptions+')'
             ,  BatchSeparator = IIF(@BatchSeparator = 1, @crlf + 'GO', '') + IIF(@TrailingLineBreak = 1, @crlf+@crlf, '')
-			,  SuggestedName = CONCAT('IX_', n.ObjectName, '_', kc.KeyColsName)
+            ,  SuggestedName  = CONCAT('IX_', n.ObjectName, '_', REPLACE(kc.KeyColsN,'{{delim}}','_'))
     ) c
     CROSS APPLY (
         SELECT IfExists    = IIF(@ScriptIfExists    = 1, s.IfExists    + @crlf + 'BEGIN;' + @crlf, '')
