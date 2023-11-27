@@ -5,6 +5,18 @@
 
 	However, if you use bigint...then it always treats it as a bigint and no precision is lost.
 */
+
+/*	Types of overlap - All comparisons are include col ordinal insensitive:
+	- Duplicate - entire index is duplicated - key cols, key ordinal, key sort, include cols
+		- e.g. IndexA: (A,-B,C) Incl (D,F,E)   ---   IndexB: (A,-B,C) Incl (F,E,D)
+	- Covered   - keys in parent index contains all keys (ordinal & sort) of the child, and contains all includes cols
+		- e.g. IndexA: (A,-B,C) Incl (D,F,E)   ---   IndexB: (A,-B) Incl (F,D)
+*/
+
+/*	Considerations:
+	- Add third set of logic to identify indexes that _could_ eliminate at least 1 other index by only adding 1 or two key or include columns
+*/
+
 DECLARE @2 bigint = 2;
 
 IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT * FROM #tmp_idx
@@ -44,43 +56,44 @@ WHERE i.[type] = 2 -- non-clustered only
 	AND o.is_ms_shipped = 0 -- exclude system objects
 	AND i.is_primary_key = 0 -- exclude primary keys
 	AND i.is_disabled = 0 -- exclude disabled
+------------------------------------------------------------------------------
 
-SELECT x.[object_id], x.index_id
-	, x.SchemaName, x.ObjectName, x.IndexName, x.ObjectType, x.IndexType
-	, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter, x.filter_definition
-	, N'█' [██], x.KeyCols, x.InclCols, x.InclColsNoCLK
-	, N'█' [██], y.IndexName
-	, MatchDescription = CASE
-							WHEN z.ExactKeys = 1 AND z.ExactIncl = 1 THEN 'exact match'
-							ELSE CHOOSE(z.ExactKeys+1, 'covers', 'exact') + ' keys' + ', ' + COALESCE(CHOOSE(z.ExactIncl+1, 'covers', 'exact'), 'no') + ' includes'
-						END
-	, z.ExactKeys, z.ExactIncl, y.KeyCols, y.InclCols, y.InclColsNoCLK
+------------------------------------------------------------------------------
+-- Duplicate
+SELECT 'Duplicate', x.[object_id]
+	, x.SchemaName, x.ObjectName, x.ObjectType, x.IndexType
+	, x.is_unique, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter, x.filter_definition
+	, N'█' [██], x.index_id, x.IndexName, x.KeyCols, x.InclColsNoCLK
+	, N'█' [██], DupID = ROW_NUMBER() OVER (PARTITION BY x.SchemaName, x.ObjectName, y.IndexName ORDER BY x.IndexName), y.index_id, y.IndexName, y.KeyCols, y.InclColsNoCLK
 FROM #tmp_idx x
 	CROSS APPLY (
-		SELECT i.IndexName, i.KeyCols, i.InclCols, i.InclColsNoCLK, i.InclBitmap1, i.InclBitmap2
+		SELECT *
 		FROM #tmp_idx i
 		WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id
-			-- We only want to match indexes like for like - unique to unique, filtered to filtered, etc.
 			AND i.is_unique = x.is_unique AND i.has_filter = x.has_filter AND i.filter_definition = x.filter_definition
-			-- Right wildcard match. Key columns are ordinal and sort dependent - `A,B,-C,D,` matches to `A,B,-C,` but not `A,-C,B,D,` and not `A,-B,C,`
-			AND x.KeyCols LIKE i.KeyCols + '%'
-			/*
-				If  the source bitmap is 10110 (indicating columns 2, 3, 5)
-				And the target bitmap is 10100 (indicating columns 3, 5)
-				Bitwise 'and'(&) returns 10100. Since that matches the target bitmap, we know the source bitmap contains all columns.
-
-				If  the source bitmap is 10110 (indicating columns 2, 3, 5)
-				And the target bitmap is 10101 (indicating columns 1, 3, 5)
-				Bitwise 'and'(&) returns 10100. This does not match the target bitmap, so we know it is not fully covering (missing column 1).
-			*/
+			--
+			AND x.KeyCols = i.KeyCols
+			AND i.InclBitmap1 = x.InclBitmap1
+			AND i.InclBitmap2 = x.InclBitmap2
+			AND i.InclBitmap3 = x.InclBitmap3
+	) y
+UNION ALL
+-- Overlapping / Covered
+SELECT 'Covered', x.[object_id]
+	, x.SchemaName, x.ObjectName, x.ObjectType, x.IndexType
+	, x.is_unique, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter, x.filter_definition
+	, N'█' [██], x.index_id, x.IndexName, x.KeyCols, x.InclColsNoCLK
+	, N'█' [██], DupID = ROW_NUMBER() OVER (PARTITION BY x.SchemaName, x.ObjectName, y.IndexName ORDER BY x.IndexName), y.index_id, y.IndexName, y.KeyCols, y.InclColsNoCLK
+FROM #tmp_idx x
+	CROSS APPLY (
+		SELECT *
+		FROM #tmp_idx i
+		WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id
+			AND i.is_unique = x.is_unique AND i.has_filter = x.has_filter AND i.filter_definition = x.filter_definition
+			--
+			AND x.KeyCols LIKE i.KeyCols + '%' AND x.KeyCols <> i.KeyCols
 			AND i.InclBitmap1 & x.InclBitmap1 = i.InclBitmap1
 			AND i.InclBitmap2 & x.InclBitmap2 = i.InclBitmap2
 			AND i.InclBitmap3 & x.InclBitmap3 = i.InclBitmap3
+			AND CONCAT_WS('|', i.InclBitmap1, i.InclBitmap2, i.InclBitmap3) <> CONCAT_WS('|', x.InclBitmap1, x.InclBitmap2, x.InclBitmap3)
 	) y
-	CROSS APPLY (
-		-- 0 = covers, 1 = exact
-		SELECT ExactKeys = IIF(x.KeyCols = y.KeyCols, 1, 0)
-			,  ExactIncl = CASE WHEN x.InclColsNoCLK = y.InclColsNoCLK THEN 1 WHEN x.InclColsNoCLK <> y.InclColsNoCLK THEN 0 ELSE NULL END
-	) z
-WHERE 1=1
-ORDER BY x.SchemaName, x.ObjectName, x.IndexName
