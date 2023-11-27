@@ -3,7 +3,8 @@
 	With float, you lose precision...So 4611686018427387904 (2^62) becomes 4611686018427387900
 	because it wants to treat it as 4.61168601842739E+18.
 
-	However, if you use bigint...then it always treats it as a bigint and no precision is lost. */
+	However, if you use bigint...then it always treats it as a bigint and no precision is lost.
+*/
 DECLARE @2 bigint = 2;
 
 IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT * FROM #tmp_idx
@@ -17,19 +18,28 @@ INTO #tmp_idx
 FROM sys.indexes i
 	JOIN sys.objects o ON o.[object_id] = i.[object_id]
 	CROSS APPLY (
-		SELECT KeyCols     = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
-			,  InclCols    = STRING_AGG(IIF(ic.is_included_column = 1, ic.column_id, NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+		SELECT KeyCols     = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key    = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+			,  InclCols    = STRING_AGG(IIF(ic.is_included_column = 1, CONCAT(IIF(cl.IsClusteredKeyColumn = 1, 'c', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
 			/*	Only supports tables with up to 189 columns....after that you're gonna have to edit the query yourself, just follow the pattern.
 				Magic number '63' - bigint is 8 bytes (64 bits). The 64th bit is used for signing (+/-), so the highest bit we can use is the 63rd bit position.
 				Also, someone please explain to me why bitwise operators don't support binary/varbinary on both sides? */
-			,  InclBitmap1 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND (ic.column_id > 63*0 AND ic.column_id <= 63*1), POWER(@2, ic.column_id-1 - 63*0), 0))) --   0 < column_id <=  63
-			,  InclBitmap2 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND (ic.column_id > 63*1 AND ic.column_id <= 63*2), POWER(@2, ic.column_id-1 - 63*1), 0))) --  63 < column_id <= 126
-			,  InclBitmap3 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND (ic.column_id > 63*2 AND ic.column_id <= 63*3), POWER(@2, ic.column_id-1 - 63*2), 0))) -- 126 < column_id <= 189
+			,  InclBitmap1 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*0 AND ic.column_id <= 63*1), POWER(@2, ic.column_id-1 - 63*0), 0))) --   0 < column_id <=  63
+			,  InclBitmap2 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*1 AND ic.column_id <= 63*2), POWER(@2, ic.column_id-1 - 63*1), 0))) --  63 < column_id <= 126
+			,  InclBitmap3 = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*2 AND ic.column_id <= 63*3), POWER(@2, ic.column_id-1 - 63*2), 0))) -- 126 < column_id <= 189
 		FROM sys.index_columns ic
+			CROSS APPLY (
+				SELECT IsClusteredKeyColumn = CONVERT(bit, COUNT(*))
+				FROM sys.indexes si
+					JOIN sys.index_columns sic ON sic.[object_id] = si.[object_id] AND sic.index_id = si.index_id
+				WHERE si.[type] = 1
+					AND si.[object_id] = ic.[object_id]
+					AND sic.column_id = ic.column_id
+					AND ic.is_included_column = 1
+			) cl
 		WHERE ic.[object_id] = i.[object_id]
 			AND ic.index_id = i.index_id
 	) x
-WHERE i.index_id >= 2 -- non-clustered only
+WHERE i.[type] = 2 -- non-clustered only
 	AND o.is_ms_shipped = 0 -- exclude system objects
 	AND i.is_primary_key = 0 -- exclude primary keys
 	AND i.is_disabled = 0 -- exclude disabled
