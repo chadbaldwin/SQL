@@ -13,13 +13,14 @@ SELECT i.[object_id], i.index_id
 	, ObjectType = o.[type_desc], IndexType = i.[type_desc]
 	, i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, i.is_hypothetical, i.has_filter
 	, filter_definition = COALESCE(i.filter_definition,'')
-	, x.KeyCols, x.InclCols, x.InclBitmap1, x.InclBitmap2, x.InclBitmap3
+	, x.KeyCols, x.InclCols, x.InclColsNoCLK, x.InclBitmap1, x.InclBitmap2, x.InclBitmap3
 INTO #tmp_idx
 FROM sys.indexes i
 	JOIN sys.objects o ON o.[object_id] = i.[object_id]
 	CROSS APPLY (
-		SELECT KeyCols     = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key    = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
-			,  InclCols    = STRING_AGG(IIF(ic.is_included_column = 1, CONCAT(IIF(cl.IsClusteredKeyColumn = 1, 'c', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+		SELECT KeyCols       = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key    = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+			,  InclCols      = STRING_AGG(IIF(ic.is_included_column = 1, CONCAT(IIF(cl.IsClusteredKeyColumn = 1, 'c', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+			,  InclColsNoCLK = STRING_AGG(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0                  , ic.column_id , NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
 			/*	Only supports tables with up to 189 columns....after that you're gonna have to edit the query yourself, just follow the pattern.
 				Magic number '63' - bigint is 8 bytes (64 bits). The 64th bit is used for signing (+/-), so the highest bit we can use is the 63rd bit position.
 				Also, someone please explain to me why bitwise operators don't support binary/varbinary on both sides? */
@@ -47,16 +48,16 @@ WHERE i.[type] = 2 -- non-clustered only
 SELECT x.[object_id], x.index_id
 	, x.SchemaName, x.ObjectName, x.IndexName, x.ObjectType, x.IndexType
 	, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.is_disabled, x.is_hypothetical, x.has_filter, x.filter_definition
-	, N'█' [██], x.KeyCols, x.InclCols
+	, N'█' [██], x.KeyCols, x.InclCols, x.InclColsNoCLK
 	, N'█' [██], y.IndexName
 	, MatchDescription = CASE
 							WHEN z.ExactKeys = 1 AND z.ExactIncl = 1 THEN 'exact match'
 							ELSE CHOOSE(z.ExactKeys+1, 'covers', 'exact') + ' keys' + ', ' + COALESCE(CHOOSE(z.ExactIncl+1, 'covers', 'exact'), 'no') + ' includes'
 						END
-	, z.ExactKeys, z.ExactIncl, y.KeyCols, y.InclCols
+	, z.ExactKeys, z.ExactIncl, y.KeyCols, y.InclCols, y.InclColsNoCLK
 FROM #tmp_idx x
 	CROSS APPLY (
-		SELECT i.IndexName, i.KeyCols, i.InclCols, i.InclBitmap1, i.InclBitmap2
+		SELECT i.IndexName, i.KeyCols, i.InclCols, i.InclColsNoCLK, i.InclBitmap1, i.InclBitmap2
 		FROM #tmp_idx i
 		WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id
 			-- We only want to match indexes like for like - unique to unique, filtered to filtered, etc.
@@ -79,7 +80,7 @@ FROM #tmp_idx x
 	CROSS APPLY (
 		-- 0 = covers, 1 = exact
 		SELECT ExactKeys = IIF(x.KeyCols = y.KeyCols, 1, 0)
-			,  ExactIncl = CASE WHEN x.InclCols = y.InclCols THEN 1 WHEN x.InclCols <> y.InclCols THEN 0 ELSE NULL END
+			,  ExactIncl = CASE WHEN x.InclColsNoCLK = y.InclColsNoCLK THEN 1 WHEN x.InclColsNoCLK <> y.InclColsNoCLK THEN 0 ELSE NULL END
 	) z
 WHERE 1=1
 ORDER BY x.SchemaName, x.ObjectName, x.IndexName
