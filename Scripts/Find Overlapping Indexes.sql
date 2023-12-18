@@ -158,7 +158,8 @@ SELECT si.[object_id], si.SchemaName, si.ObjectName, si.ObjectType, si.is_unique
 FROM #matches m
     JOIN #tmp_idx si ON si.ID = m.SourceID
     JOIN #tmp_idx mi ON mi.ID = m.MatchID
-WHERE m.MatchRank = 1
+WHERE 1=1
+--  AND m.MatchRank = 1
 ORDER BY  si.SchemaName, si.ObjectName, mi.index_id
         , m.MatchRank, m.ExtraColCount, si.index_id;
 ------------------------------------------------------------------------------
