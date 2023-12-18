@@ -96,13 +96,13 @@ FROM sys.indexes i
     ) c
     CROSS APPLY (
         SELECT IfExists    = IIF(@ScriptIfExists    = 1, s.IfExists    + @crlf + 'BEGIN;' + @crlf, '')
-                           + IIF(@ScriptIfExists    = 1, @tab, '') + IIF(@AddOutputMessages = 1, @SqlOutputMessage + @crlf, '')
+                           + IIF(@AddOutputMessages = 1, IIF(@ScriptIfExists    = 1, @tab, '') + @SqlOutputMessage + @crlf, '')
                            + IIF(@ScriptIfExists    = 1, @tab, '') + '{{Script}}'
                            + IIF(@ScriptIfExists    = 1, @crlf + 'END;', '')
                            + c.BatchSeparator
 
             ,  IfNotExists = IIF(@ScriptIfNotExists = 1, s.IfNotExists + @crlf + 'BEGIN;' + @crlf, '')
-                           + IIF(@ScriptIfNotExists = 1, @tab, '') + IIF(@AddOutputMessages = 1, @SqlOutputMessage + @crlf, '')
+                           + IIF(@AddOutputMessages = 1, IIF(@ScriptIfNotExists = 1, @tab, '') + @SqlOutputMessage + @crlf, '')
                            + IIF(@ScriptIfNotExists = 1, @tab, '') + '{{Script}}'
                            + IIF(@ScriptIfNotExists = 1, @crlf + 'END;', '')
                            + c.BatchSeparator
@@ -111,4 +111,4 @@ WHERE i.[type] > 0 -- Exclude heaps
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 -- PK's and Unique constraints have their own syntax
     AND o.is_ms_shipped = 0
-ORDER BY n.SchemaName, n.ObjectName, n.IndexName;
+ORDER BY n.SchemaName, n.ObjectName, i.index_id;
