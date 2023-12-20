@@ -11,9 +11,7 @@
 -- Populate temp table with dependent infomation
 ------------------------------------------------------------------------------
 IF OBJECT_ID(N'tempdb..#tmp_indexes',N'U') IS NOT NULL DROP TABLE #tmp_indexes; --SELECT * FROM #tmp_indexes
-SELECT ObjectID             = i.[object_id]
-    , IndexID               = i.index_id
-    , SchemaName            = SCHEMA_NAME(o.[schema_id])
+SELECT SchemaName           = SCHEMA_NAME(o.[schema_id])
     , ObjectName            = o.[name]
     , IndexName             = i.[name]
     , ObjectType            = o.[type_desc]
@@ -146,12 +144,7 @@ FROM #tmp_indexes i
                            + c.BatchSeparator
     ) y
     CROSS APPLY (
-        SELECT CompleteCreate = CONCAT(c.CreateBase
-                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), N' ') + c.CreateOn , N' ' , c.Cols
-                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), N' ') + c.InclCols
-                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), N' ') + c.Filtered
-                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), N' ') + c.CreateOptions
-                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), N' ') + c.DataSpace
-                                , N';')
+        SELECT CompleteCreate = CONCAT_WS(IIF(@FormatSQL = 1, @crlf + @tab + IIF(@ScriptIfNotExists = 1, @tab, N''), N' ')
+								, c.CreateBase, c.CreateOn + N' ' + c.Cols, c.InclCols, c.Filtered, c.CreateOptions, c.DataSpace) + N';'
     ) z
 ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
