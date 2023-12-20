@@ -11,28 +11,28 @@
 -- Populate temp table with dependent infomation
 ------------------------------------------------------------------------------
 IF OBJECT_ID('tempdb..#tmp_indexes','U') IS NOT NULL DROP TABLE #tmp_indexes; --SELECT * FROM #tmp_indexes
-SELECT ObjectID				= i.[object_id]
-	, IndexID				= i.index_id
-	, SchemaName			= SCHEMA_NAME(o.[schema_id])
-	, ObjectName			= o.[name]
-	, IndexName				= i.[name]
-	, ObjectType			= o.[type_desc]
-	, IndexType				= i.[type_desc]
-	, IsUnique				= i.is_unique
-	, IgnoreDupKey			= i.[ignore_dup_key]
-	, [FillFactor]			= i.fill_factor
-	, IsPadded				= i.is_padded
-	, IsDisabled			= i.is_disabled
-	, AllowRowLocks			= i.[allow_row_locks]
-	, AllowPageLocks		= i.[allow_page_locks]
-	, HasFilter				= i.has_filter
-	, FilterDefinition		= i.filter_definition
-	, StatNoRecompute		= st.no_recompute
-	, StatIsIncremental		= st.is_incremental
-	, DataCompressionType	= p.[data_compression_desc] COLLATE DATABASE_DEFAULT
-	, IndexFGName			= FILEGROUP_NAME(i.data_space_id)
-	, IndexFGIsDefault		= FILEGROUPPROPERTY(FILEGROUP_NAME(i.data_space_id), 'IsDefault')
-	, kc.KeyColsN, kc.KeyColsNQO, kc.InclColsNQ
+SELECT ObjectID             = i.[object_id]
+    , IndexID               = i.index_id
+    , SchemaName            = SCHEMA_NAME(o.[schema_id])
+    , ObjectName            = o.[name]
+    , IndexName             = i.[name]
+    , ObjectType            = o.[type_desc]
+    , IndexType             = i.[type_desc] COLLATE DATABASE_DEFAULT
+    , IsUnique              = i.is_unique
+    , IgnoreDupKey          = i.[ignore_dup_key]
+    , [FillFactor]          = i.fill_factor
+    , IsPadded              = i.is_padded
+    , IsDisabled            = i.is_disabled
+    , AllowRowLocks         = i.[allow_row_locks]
+    , AllowPageLocks        = i.[allow_page_locks]
+    , HasFilter             = i.has_filter
+    , FilterDefinition      = i.filter_definition
+    , StatNoRecompute       = st.no_recompute
+    , StatIsIncremental     = st.is_incremental
+    , DataCompressionType   = p.[data_compression_desc] COLLATE DATABASE_DEFAULT
+    , IndexFGName           = FILEGROUP_NAME(i.data_space_id)
+    , IndexFGIsDefault      = FILEGROUPPROPERTY(FILEGROUP_NAME(i.data_space_id), 'IsDefault')
+    , kc.KeyColsN, kc.KeyColsNQO, kc.InclColsNQ
 INTO #tmp_indexes
 FROM sys.indexes i
     JOIN sys.objects o ON o.[object_id] = i.[object_id]
@@ -41,9 +41,9 @@ FROM sys.indexes i
     LEFT HASH JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id AND p.partition_number = 1 -- Partitioning not yet supported
     JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     CROSS APPLY (
-        SELECT KeyColsN      = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName          , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
-            ,  KeyColsNQO    = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNameQuoteOrder, NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
-            ,  InclColsNQ    = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNameQuote     , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.index_column_id)
+        SELECT KeyColsN      = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName          , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id)
+            ,  KeyColsNQO    = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNameQuoteOrder, NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id)
+            ,  InclColsNQ    = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNameQuote     , NULL), '{{delim}}') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id)
         FROM sys.index_columns ic
             CROSS APPLY (SELECT ColName = COL_NAME(ic.[object_id], ic.column_id)) n
             CROSS APPLY (SELECT ColNameQuote = QUOTENAME(n.ColName)) q
@@ -61,7 +61,8 @@ WHERE i.[type] > 0 -- Exclude heaps
 DECLARE @ScriptIfNotExists  bit           = 1,
         @ScriptIfExists     bit           = 1,
         @EnableOnline       bit           = IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
-        @BatchSeparator     bit           = 0,
+        @BatchSeparator     bit           = 1,
+        @FormatSQL          bit           = 1,
         @TrailingLineBreak  bit           = 1,
         @AddOutputMessages  bit           = 1,
         @MAXDOP             tinyint       = 0; -- 0 = Default
@@ -82,7 +83,7 @@ DECLARE @SqlIfNotExists     nvarchar(MAX) = N'IF (INDEXPROPERTY(OBJECT_ID(''{{Sc
 SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.IndexType, i.IsDisabled, i.HasFilter
     , KeyCols = REPLACE(i.KeyColsNQO , '{{delim}}',', '), InclCols = REPLACE(i.InclColsNQ, '{{delim}}',', ')
     , c.SuggestedName, MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
-    , CreateScript  = REPLACE(REPLACE(y.IfNotExists, '{{Message}}', REPLACE(c.CreateBase      ,'''','''''')), '{{Script}}', CONCAT_WS(' ', c.CreateBase, c.Cols, c.Features) + ';')
+    , CreateScript  = REPLACE(REPLACE(y.IfNotExists, '{{Message}}', REPLACE(c.CreateBase      ,'''','''''')), '{{Script}}', z.CompleteCreate)
     , DropScript    = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.DropScript      ,'''','''''')), '{{Script}}', s.DropScript)
     , RebuildScript = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.RebuildScript   ,'''','''''')), '{{Script}}', CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';')
     , DisableScript = REPLACE(REPLACE(y.IfExists   , '{{Message}}', REPLACE(s.DisableScript   ,'''','''''')), '{{Script}}', s.DisableScript)
@@ -117,13 +118,13 @@ FROM #tmp_indexes i
         WHERE opt.v IS NOT NULL -- Exclude default values
     ) x
     CROSS APPLY (
-        SELECT CreateBase     = CONCAT_WS(' ', 'CREATE', IIF(i.IsUnique = 1, 'UNIQUE', NULL), i.IndexType COLLATE DATABASE_DEFAULT, 'INDEX', qn.IndexName, 'ON', qn.SchemaName+'.'+qn.ObjectName)
-            ,  Cols           = CONCAT_WS(' ', '('+REPLACE(i.KeyColsNQO,'{{delim}}',', ')+')', 'INCLUDE ('+REPLACE(i.InclColsNQ,'{{delim}}',', ')+')')
-            ,  Features       = CONCAT_WS(' '
-                                    , 'WHERE '+i.FilterDefinition
-                                    , 'WITH ('+NULLIF(CONCAT_WS(', ', x.CreateOptions, x.BuildOptions),'')+')'
-                                    , 'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)
-                                )
+        SELECT CreateBase     = CONCAT_WS(' ', 'CREATE', IIF(i.IsUnique = 1, 'UNIQUE', NULL), i.IndexType, 'INDEX', qn.IndexName)
+            ,  CreateOn       = CONCAT_WS(' ', 'ON', qn.SchemaName+'.'+qn.ObjectName)
+            ,  Cols           = '('+REPLACE(i.KeyColsNQO,'{{delim}}',', ')+')'
+            ,  InclCols       = 'INCLUDE ('+REPLACE(i.InclColsNQ,'{{delim}}',', ')+')'
+            ,  Filtered       = 'WHERE '+i.FilterDefinition
+            ,  CreateOptions  = 'WITH ('+NULLIF(CONCAT_WS(', ', x.CreateOptions, x.BuildOptions),'')+')'
+            ,  DataSpace      = 'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)
             ,  BuildOptions   = 'WITH ('+x.BuildOptions+')'
             ,  BatchSeparator = IIF(@BatchSeparator = 1, @crlf + 'GO', '') + IIF(@TrailingLineBreak = 1, @crlf+@crlf, '')
             ,  SuggestedName  = CONCAT('IX_', i.ObjectName, '_', REPLACE(i.KeyColsN,'{{delim}}','_'))
@@ -141,4 +142,13 @@ FROM #tmp_indexes i
                            + IIF(@ScriptIfNotExists = 1, @crlf + 'END;', '')
                            + c.BatchSeparator
     ) y
+    CROSS APPLY (
+        SELECT CompleteCreate = CONCAT(c.CreateBase
+                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), ' ') + c.CreateOn , ' ' , c.Cols
+                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), ' ') + c.InclCols
+                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), ' ') + c.Filtered
+                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), ' ') + c.CreateOptions
+                                , IIF(@FormatSQL = 1, @crlf + IIF(@ScriptIfNotExists = 1, @tab+@tab, @tab), ' ') + c.DataSpace
+                                , ';')
+    ) z
 ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
