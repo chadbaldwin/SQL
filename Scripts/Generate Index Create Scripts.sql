@@ -118,13 +118,13 @@ FROM #tmp_indexes i
         WHERE opt.v IS NOT NULL -- Exclude default values
     ) x
     CROSS APPLY (
-        SELECT CreateBase     = CONCAT_WS(' ', 'CREATE', IIF(i.IsUnique = 1, 'UNIQUE', NULL), i.IndexType, 'INDEX', qn.IndexName)	-- CREATE UNIQUE INDEX [IX_TableName]
-            ,  CreateOn       = CONCAT_WS(' ', 'ON', qn.SchemaName+'.'+qn.ObjectName)												-- ON [dbo].[TableName]
-            ,  Cols           = '('+REPLACE(i.KeyColsNQO,'{{delim}}',', ')+')'														-- ([KeyCol1], [KeyCol2], [KeyCol3])
-            ,  InclCols       = 'INCLUDE ('+REPLACE(i.InclColsNQ,'{{delim}}',', ')+')'												-- INCLUDE ([ColA], [ColB], [ColC])
-            ,  Filtered       = 'WHERE '+i.FilterDefinition																			-- WHERE ([ColA] = 123)
-            ,  CreateOptions  = 'WITH ('+NULLIF(CONCAT_WS(', ', x.CreateOptions, x.BuildOptions),'')+')'							-- WITH (PAD_INDEX=ON, FILLFACTOR=85, ONLINE=ON)
-            ,  DataSpace      = 'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)									-- ON [Secondary]
+        SELECT CreateBase     = CONCAT_WS(' ', 'CREATE', IIF(i.IsUnique = 1, 'UNIQUE', NULL), i.IndexType, 'INDEX', qn.IndexName)   -- CREATE UNIQUE INDEX [IX_TableName]
+            ,  CreateOn       = CONCAT_WS(' ', 'ON', qn.SchemaName+'.'+qn.ObjectName)                                               -- ON [dbo].[TableName]
+            ,  Cols           = '('+REPLACE(i.KeyColsNQO,'{{delim}}',', ')+')'                                                      -- ([KeyCol1], [KeyCol2], [KeyCol3])
+            ,  InclCols       = 'INCLUDE ('+REPLACE(i.InclColsNQ,'{{delim}}',', ')+')'                                              -- INCLUDE ([ColA], [ColB], [ColC])
+            ,  Filtered       = 'WHERE '+i.FilterDefinition                                                                         -- WHERE ([ColA] = 123)
+            ,  CreateOptions  = 'WITH ('+NULLIF(CONCAT_WS(', ', x.CreateOptions, x.BuildOptions),'')+')'                            -- WITH (PAD_INDEX=ON, FILLFACTOR=85, ONLINE=ON)
+            ,  DataSpace      = 'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)                                   -- ON [Secondary]
 
             ,  BuildOptions   = 'WITH ('+x.BuildOptions+')'
             ,  BatchSeparator = IIF(@BatchSeparator = 1, @crlf + 'GO', '') + IIF(@TrailingLineBreak = 1, @crlf+@crlf, '')
