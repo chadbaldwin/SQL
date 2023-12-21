@@ -15,6 +15,7 @@ SELECT SchemaName           = SCHEMA_NAME(o.[schema_id])
     , ObjectName            = o.[name]
     , IndexName             = i.[name]
     , ObjectType            = o.[type_desc]
+    , ObjectTypeCode        = o.[type] COLLATE DATABASE_DEFAULT
     , IndexType             = i.[type_desc] COLLATE DATABASE_DEFAULT
     , IsUnique              = i.is_unique
     , IgnoreDupKey          = i.[ignore_dup_key]
@@ -56,47 +57,49 @@ WHERE i.[type] > 0 -- Exclude heaps
 
 ------------------------------------------------------------------------------
 -- Options
-DECLARE @ScriptIfNotExists  bit            = 1,
-        @ScriptIfExists     bit            = 1,
-        @EnableOnline       bit            = IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
-        @BatchSeparator     bit            = 1,
-        @FormatSQL          bit            = 1,
-        @TrailingLineBreak  bit            = 1,
-        @AddOutputMessages  bit            = 1,
-        @MAXDOP             tinyint        = 0; -- 0 = Default
+DECLARE @ScriptIfNotExists   bit            = 1,
+        @ScriptIfExists      bit            = 1,
+        @EnableOnline        bit            = IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
+        @BatchSeparator      bit            = 1,
+        @FormatSQL           bit            = 1,
+        @TrailingLineBreak   bit            = 1,
+        @AddOutputMessages   bit            = 1,
+        @MAXDOP              tinyint        = 0; -- 0 = Default
 -- Other
-DECLARE @crlf               nchar(2)       = NCHAR(13)+NCHAR(10),
-        @tab                nchar(1)       = NCHAR(9);
+DECLARE @crlf                nchar(2)       = NCHAR(13)+NCHAR(10),
+        @tab                 nchar(1)       = NCHAR(9);
 -- Templates
-DECLARE @SqlIfNotExists     nvarchar(4000) = N'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL)',
-        @SqlIfExists        nvarchar(4000) = N'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)',
-        @SqlDrop            nvarchar(4000) = N'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};',
-        @SqlRebuild         nvarchar(4000) = N'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD',
-        @SqlDisable         nvarchar(4000) = N'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
-        @SqlOutputMessage   nvarchar(4000) = N'RAISERROR(''Execute: {{Message}}'',0,1) WITH NOWAIT;',
-        @SqlErrorMessage    nvarchar(4000) = N'RAISERROR(''ERROR: {{Message}}'',11,1) WITH NOWAIT;';
+DECLARE @SqlIfNotExists      nvarchar(4000) = N'IF ((OBJECT_ID(N''{{Schema}}.{{Object}}'',''{{ObjectTypeCode}}'') IS NOT NULL)' + @crlf
+                                            + @tab + N'AND (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL))',
+        @SqlIfExists         nvarchar(4000) = N'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)',
+        @SqlDrop             nvarchar(4000) = N'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};',
+        @SqlRebuild          nvarchar(4000) = N'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD',
+        @SqlDisable          nvarchar(4000) = N'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
+        @SqlOutputMessage    nvarchar(4000) = N'RAISERROR(''Execute: {{Message}}'',0,1) WITH NOWAIT;',
+        @SqlErrorMessage     nvarchar(4000) = N'RAISERROR(''ERROR: {{Message}}'',11,1) WITH NOWAIT;';
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.IndexType, i.IsDisabled, i.HasFilter
-    , KeyCols              = REPLACE(i.KeyColsNQO , N'{{delim}}',N', ')
-	, InclCols             = REPLACE(i.InclColsNQ, N'{{delim}}',N', ')
+    , KeyCols              = REPLACE(i.KeyColsNQO, N'{{delim}}',N', ')
+    , InclCols             = REPLACE(i.InclColsNQ, N'{{delim}}',N', ')
     , SuggestedName        = c.SuggestedName
-	, MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
+    , MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
     , CreateScript         = REPLACE(REPLACE(y.IfNotExists, N'{{Message}}', REPLACE(c.CreateBase   ,N'''',N'''''')), N'{{Script}}', z.CompleteCreate)
     , DropScript           = REPLACE(REPLACE(y.IfExists   , N'{{Message}}', REPLACE(s.DropScript   ,N'''',N'''''')), N'{{Script}}', s.DropScript)
     , RebuildScript        = REPLACE(REPLACE(y.IfExists   , N'{{Message}}', REPLACE(s.RebuildScript,N'''',N'''''')), N'{{Script}}', CONCAT_WS(N' ', s.RebuildScript, c.BuildOptions) + N';')
     , DisableScript        = REPLACE(REPLACE(y.IfExists   , N'{{Message}}', REPLACE(s.DisableScript,N'''',N'''''')), N'{{Script}}', s.DisableScript)
-    , VerifyDrop           = s.IfExists + @crlf + N'BEGIN;' + @crlf + @tab + REPLACE(@SqlErrorMessage , N'{{Message}}', REPLACE(s.DropScript   ,N'''',N'''''')) + @crlf + N'END;' + c.BatchSeparator
+    , VerifyDrop           = s.IfExists + @crlf + N'BEGIN;' + @crlf + @tab
+                              + REPLACE(@SqlErrorMessage  , N'{{Message}}', REPLACE(s.DropScript   ,N'''',N'''''')) + @crlf + N'END;' + c.BatchSeparator
 FROM #tmp_indexes i
-    CROSS APPLY (SELECT SchemaName = QUOTENAME(i.SchemaName), ObjectName = QUOTENAME(i.ObjectName), IndexName = QUOTENAME(i.IndexName)) qn
+    CROSS APPLY (SELECT SchemaName = QUOTENAME(i.SchemaName), ObjectName = QUOTENAME(i.ObjectName), IndexName = QUOTENAME(i.IndexName)) q
     -- Create the base scripts for each section
     CROSS APPLY (
-        SELECT IfNotExists   = REPLACE(REPLACE(REPLACE(@SqlIfNotExists, N'{{Schema}}', qn.SchemaName), N'{{Object}}', qn.ObjectName), N'{{Index}}', i.IndexName)
-            ,  IfExists      = REPLACE(REPLACE(REPLACE(@SqlIfExists   , N'{{Schema}}', qn.SchemaName), N'{{Object}}', qn.ObjectName), N'{{Index}}', i.IndexName)
-            ,  DisableScript = REPLACE(REPLACE(REPLACE(@SqlDisable    , N'{{Schema}}', qn.SchemaName), N'{{Object}}', qn.ObjectName), N'{{Index}}', qn.IndexName)
-            ,  RebuildScript = REPLACE(REPLACE(REPLACE(@SqlRebuild    , N'{{Schema}}', qn.SchemaName), N'{{Object}}', qn.ObjectName), N'{{Index}}', qn.IndexName)
-            ,  DropScript    = REPLACE(REPLACE(REPLACE(@SqlDrop       , N'{{Schema}}', qn.SchemaName), N'{{Object}}', qn.ObjectName), N'{{Index}}', qn.IndexName)
+        SELECT IfNotExists   = REPLACE(REPLACE(REPLACE(REPLACE(@SqlIfNotExists, N'{{Schema}}', q.SchemaName), N'{{Object}}', q.ObjectName), N'{{Index}}', i.IndexName), N'{{ObjectTypeCode}}', RTRIM(i.ObjectTypeCode))
+            ,  IfExists      =         REPLACE(REPLACE(REPLACE(@SqlIfExists   , N'{{Schema}}', q.SchemaName), N'{{Object}}', q.ObjectName), N'{{Index}}', i.IndexName)
+            ,  DisableScript =         REPLACE(REPLACE(REPLACE(@SqlDisable    , N'{{Schema}}', q.SchemaName), N'{{Object}}', q.ObjectName), N'{{Index}}', q.IndexName)
+            ,  RebuildScript =         REPLACE(REPLACE(REPLACE(@SqlRebuild    , N'{{Schema}}', q.SchemaName), N'{{Object}}', q.ObjectName), N'{{Index}}', q.IndexName)
+            ,  DropScript    =         REPLACE(REPLACE(REPLACE(@SqlDrop       , N'{{Schema}}', q.SchemaName), N'{{Object}}', q.ObjectName), N'{{Index}}', q.IndexName)
     ) s
     CROSS APPLY (
         SELECT CreateOptions = STRING_AGG(IIF(opt.IsBuildOption = 0, CONCAT(opt.n, N'=', opt.v), NULL), N', ')
@@ -118,14 +121,13 @@ FROM #tmp_indexes i
         WHERE opt.v IS NOT NULL -- Exclude default values
     ) x
     CROSS APPLY (
-        SELECT CreateBase     = CONCAT_WS(N' ', N'CREATE', IIF(i.IsUnique = 1, N'UNIQUE', NULL), i.IndexType, N'INDEX', qn.IndexName) -- CREATE UNIQUE INDEX [IX_TableName]
-            ,  CreateOn       = CONCAT_WS(N' ', N'ON', qn.SchemaName+N'.'+qn.ObjectName)                                              -- ON [dbo].[TableName]
-            ,  Cols           = N'('+REPLACE(i.KeyColsNQO,N'{{delim}}',N', ')+N')'                                                    -- ([KeyCol1], [KeyCol2], [KeyCol3])
-            ,  InclCols       = N'INCLUDE ('+REPLACE(i.InclColsNQ,N'{{delim}}',N', ')+N')'                                            -- INCLUDE ([ColA], [ColB], [ColC])
-            ,  Filtered       = N'WHERE '+i.FilterDefinition                                                                          -- WHERE ([ColA] = 123)
-            ,  CreateOptions  = N'WITH ('+NULLIF(CONCAT_WS(N', ', x.CreateOptions, x.BuildOptions),N'')+N')'                          -- WITH (PAD_INDEX=ON, FILLFACTOR=85, ONLINE=ON)
-            ,  DataSpace      = N'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)                                    -- ON [Secondary]
-
+        SELECT CreateBase     = CONCAT_WS(N' ', N'CREATE', IIF(i.IsUnique = 1, N'UNIQUE', NULL), i.IndexType, N'INDEX', q.IndexName) -- CREATE UNIQUE INDEX [IX_TableName]
+            ,  CreateOn       = CONCAT_WS(N' ', N'ON', q.SchemaName+N'.'+q.ObjectName)                                               -- ON [dbo].[TableName]
+            ,  Cols           = N'('+REPLACE(i.KeyColsNQO,N'{{delim}}',N', ')+N')'                                                   -- ([KeyCol1], [KeyCol2], [KeyCol3])
+            ,  InclCols       = N'INCLUDE ('+REPLACE(i.InclColsNQ,N'{{delim}}',N', ')+N')'                                           -- INCLUDE ([ColA], [ColB], [ColC])
+            ,  Filtered       = N'WHERE '+i.FilterDefinition                                                                         -- WHERE ([ColA] = 123)
+            ,  CreateOptions  = N'WITH ('+NULLIF(CONCAT_WS(N', ', x.CreateOptions, x.BuildOptions),N'')+N')'                         -- WITH (PAD_INDEX=ON, FILLFACTOR=85, ONLINE=ON)
+            ,  DataSpace      = N'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)                                   -- ON [Secondary]
             ,  BuildOptions   = N'WITH ('+x.BuildOptions+N')'
             ,  BatchSeparator = IIF(@BatchSeparator = 1, @crlf + N'GO', N'') + IIF(@TrailingLineBreak = 1, @crlf+@crlf, N'')
             ,  SuggestedName  = LEFT(CONCAT(N'IX_', i.ObjectName, N'_', REPLACE(i.KeyColsN,N'{{delim}}',N'_')), 128)
@@ -145,6 +147,6 @@ FROM #tmp_indexes i
     ) y
     CROSS APPLY (
         SELECT CompleteCreate = CONCAT_WS(IIF(@FormatSQL = 1, @crlf + @tab + IIF(@ScriptIfNotExists = 1, @tab, N''), N' ')
-								, c.CreateBase, c.CreateOn + N' ' + c.Cols, c.InclCols, c.Filtered, c.CreateOptions, c.DataSpace) + N';'
+                                        , c.CreateBase, c.CreateOn + N' ' + c.Cols, c.InclCols, c.Filtered, c.CreateOptions, c.DataSpace) + N';'
     ) z
 ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
