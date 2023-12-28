@@ -80,6 +80,7 @@ DECLARE @SqlIfNotExists      nvarchar(4000) = N'IF ((OBJECT_ID(N''{{Schema}}.{{O
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+IF OBJECT_ID('tempdb..#output','U') IS NOT NULL DROP TABLE #output; --SELECT * FROM #output
 SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.IndexType, i.IsDisabled, i.HasFilter
     , KeyCols              = REPLACE(i.KeyColsNQO, N'{{delim}}',N', ')
     , InclCols             = REPLACE(i.InclColsNQ, N'{{delim}}',N', ')
@@ -91,6 +92,7 @@ SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.IndexType, i.IsD
     , DisableScript        = REPLACE(REPLACE(y.IfExists   , N'{{Message}}', REPLACE(s.DisableScript,N'''',N'''''')), N'{{Script}}', s.DisableScript)
     , VerifyDrop           = s.IfExists + @crlf + N'BEGIN;' + @crlf + @tab
                               + REPLACE(@SqlErrorMessage  , N'{{Message}}', REPLACE(s.DropScript   ,N'''',N'''''')) + @crlf + N'END;' + c.BatchSeparator
+INTO #output
 FROM #tmp_indexes i
     CROSS APPLY (SELECT SchemaName = QUOTENAME(i.SchemaName), ObjectName = QUOTENAME(i.ObjectName), IndexName = QUOTENAME(i.IndexName)) q
     -- Create the base scripts for each section
@@ -148,5 +150,13 @@ FROM #tmp_indexes i
     CROSS APPLY (
         SELECT CompleteCreate = CONCAT_WS(IIF(@FormatSQL = 1, @crlf + @tab + IIF(@ScriptIfNotExists = 1, @tab, N''), N' ')
                                         , c.CreateBase, c.CreateOn + N' ' + c.Cols, c.InclCols, c.Filtered, c.CreateOptions, c.DataSpace) + N';'
-    ) z
+    ) z;
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+SELECT *
+FROM #output i
 ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------

@@ -16,6 +16,8 @@
 */
 
 /*  Considerations:
+  * Improve ability to compare the entire index definition. Currently, only keys and includes are compared.
+    However, things like...padding, fillfactor and other settings are ignored.
 */
 
 DECLARE @2                      bigint  = 2,
@@ -24,26 +26,27 @@ DECLARE @2                      bigint  = 2,
 IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT * FROM #tmp_idx
 SELECT ID = IDENTITY(int), i.[object_id], i.index_id
     , SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]
+    , FQIN = CONCAT_WS('.', QUOTENAME(DB_NAME()), QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))
     , ObjectType = o.[type_desc], IndexType = i.[type_desc]
     , i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, i.is_hypothetical, i.has_filter
-    , x.KeyCols, x.InclCols, x.InclColsNoCLK, x.InclBitmap1, x.InclBitmap2, x.InclBitmap3
+    , x.KeyColIDs, x.InclColsNoCLK, x.InclBitmap1, x.InclBitmap2, x.InclBitmap3
     , ixs.used_kb, ixs.reserved_kb
     , filter_definition = COALESCE(fd.NewFilterDef, '')
 INTO #tmp_idx
 FROM sys.indexes i
     JOIN sys.objects o ON o.[object_id] = i.[object_id]
     CROSS APPLY (
-        SELECT KeyCols       = STRING_AGG(IIF(ic.is_included_column = 0, CONCAT(IIF(ic.is_descending_key    = 1, '-', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
-            ,  InclCols      = STRING_AGG(IIF(ic.is_included_column = 1, CONCAT(IIF(cl.IsClusteredKeyColumn = 1, 'c', ''), ic.column_id), NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+        SELECT KeyColIDs          = STRING_AGG(IIF(ic.is_descending_key    = 1, '-', '') + n.KeyColID   , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id)+','
             /*  Ignore include columns that are also part of the clustering key because on clustered indexes, those columns are automatically included in every nonclustered index */
-            ,  InclColsNoCLK = STRING_AGG(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0                  , ic.column_id , NULL), ',') WITHIN GROUP (ORDER BY ic.key_ordinal)+','
+            ,  InclColsNoCLK      = STRING_AGG(IIF(cl.IsClusteredKeyColumn = 0, n.InclColID  , NULL)    , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.index_column_id)+','
             /*  Only supports tables with up to 189 columns....after that you're gonna have to edit the query yourself, just follow the pattern.
                 Magic number '63' - bigint is 8 bytes (64 bits). The 64th bit is used for signing (+/-), so the highest bit we can use is the 63rd bit position.
                 Also, someone please explain to me why bitwise operators don't support binary/varbinary on both sides? */
-            ,  InclBitmap1   = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*0 AND ic.column_id <= 63*1), POWER(@2, ic.column_id-1 - 63*0), 0))) --   0 < column_id <=  63
-            ,  InclBitmap2   = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*1 AND ic.column_id <= 63*2), POWER(@2, ic.column_id-1 - 63*1), 0))) --  63 < column_id <= 126
-            ,  InclBitmap3   = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*2 AND ic.column_id <= 63*3), POWER(@2, ic.column_id-1 - 63*2), 0))) -- 126 < column_id <= 189
+            ,  InclBitmap1        = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*0 AND ic.column_id <= 63*1), POWER(@2, ic.column_id-1 - 63*0), 0))) --   0 < column_id <=  63
+            ,  InclBitmap2        = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*1 AND ic.column_id <= 63*2), POWER(@2, ic.column_id-1 - 63*1), 0))) --  63 < column_id <= 126
+            ,  InclBitmap3        = CONVERT(bigint, SUM(IIF(ic.is_included_column = 1 AND cl.IsClusteredKeyColumn = 0 AND (ic.column_id > 63*2 AND ic.column_id <= 63*3), POWER(@2, ic.column_id-1 - 63*2), 0))) -- 126 < column_id <= 189
         FROM sys.index_columns ic
+            JOIN sys.columns c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
             CROSS APPLY (
                 SELECT IsClusteredKeyColumn = CONVERT(bit, COUNT(*))
                 FROM sys.indexes si
@@ -53,6 +56,11 @@ FROM sys.indexes i
                     AND sic.column_id = ic.column_id
                     AND ic.is_included_column = 1
             ) cl
+            CROSS APPLY (
+                SELECT KeyColID    = IIF(ic.is_included_column = 0, ic.column_id, NULL)
+                    ,  InclColID   = IIF(ic.is_included_column = 1, ic.column_id, NULL)
+                    ,  KeyColName  = IIF(ic.is_included_column = 0, c.[name], NULL)
+            ) n
         WHERE ic.[object_id] = i.[object_id]
             AND ic.index_id = i.index_id
     ) x
@@ -78,12 +86,12 @@ WHERE i.[type] = 2 -- non-clustered only
     AND o.is_ms_shipped = 0 -- exclude system objects
     AND i.is_primary_key = 0 -- exclude primary keys
     AND i.is_disabled = 0 -- exclude disabled
-    AND i.is_hypothetical = 0
+    AND i.is_hypothetical = 0;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 DROP TABLE IF EXISTS #matches; --SELECT * FROM #matches
-SELECT x.MatchType, x.MatchRank, x.SourceID, x.MatchID, x.ExtraColCount
+SELECT ID = IDENTITY(int), x.MatchType, x.MatchRank, x.SourceID, x.MatchID, x.ExtraColCount
 INTO #matches
 FROM (
     -- Duplicate - exact duplicates
@@ -96,7 +104,7 @@ FROM (
             WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
                 AND i.is_unique = x.is_unique AND i.has_filter = x.has_filter AND i.filter_definition = x.filter_definition -- Match on index type (unique, filtered, etc)
                 --
-                AND x.KeyCols = i.KeyCols           -- Keys are exact match
+                AND x.KeyColIDs = i.KeyColIDs           -- Keys are exact match
                 AND i.InclBitmap1 = x.InclBitmap1   -- Includes are exact match
                 AND i.InclBitmap2 = x.InclBitmap2
                 AND i.InclBitmap3 = x.InclBitmap3
@@ -112,7 +120,7 @@ FROM (
             WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
                 AND i.is_unique = x.is_unique AND i.has_filter = x.has_filter AND i.filter_definition = x.filter_definition -- Match on index type (unique, filtered, etc)
                 --
-                AND x.KeyCols LIKE i.KeyCols + '%' AND x.KeyCols <> i.KeyCols -- Keys are covering, but not duplicate
+                AND x.KeyColIDs LIKE i.KeyColIDs + '%' AND x.KeyColIDs <> i.KeyColIDs -- Keys are covering, but not duplicate
                 AND i.InclBitmap1 & x.InclBitmap1 = i.InclBitmap1   -- Includes are covering, including duplicates
                 AND i.InclBitmap2 & x.InclBitmap2 = i.InclBitmap2
                 AND i.InclBitmap3 & x.InclBitmap3 = i.InclBitmap3
@@ -134,7 +142,7 @@ FROM (
             WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
                 AND i.is_unique = x.is_unique AND i.has_filter = x.has_filter AND i.filter_definition = x.filter_definition -- Match on index type (unique, filtered, etc)
                 --
-                AND x.KeyCols LIKE i.KeyCols + '%' -- Keys are covering, including duplicates
+                AND x.KeyColIDs LIKE i.KeyColIDs + '%' -- Keys are covering, including duplicates
                 AND (c.ExtraColCount >= 1 AND c.ExtraColCount <= @Mergable_ExtraColMax) -- Includes are off by small number
         ) y
 ) x;
@@ -145,10 +153,10 @@ SELECT si.[object_id], si.SchemaName, si.ObjectName, si.ObjectType, si.is_unique
     , N'█' [██], m.MatchRank, m.MatchType
     , GroupID   = DENSE_RANK() OVER (ORDER BY     si.SchemaName, si.ObjectName, mi.index_id)
     , DupID     = ROW_NUMBER() OVER (PARTITION BY si.SchemaName, si.ObjectName, mi.index_id ORDER BY m.MatchRank, m.ExtraColCount, si.index_id)
-    , N'█' [██], si.IndexType, si.is_unique_constraint, si.index_id, si.IndexName, si.KeyCols, si.InclColsNoCLK
+    , N'█' [██], si.IndexType, si.is_unique_constraint, si.index_id, si.FQIN, si.IndexName, si.KeyColIDs, si.InclColsNoCLK
         , used_kb           = RIGHT(CONCAT(SPACE(16), FORMAT(si.used_kb, 'N0')),16) 
         , reserved_kb       = RIGHT(CONCAT(SPACE(16), FORMAT(si.reserved_kb, 'N0')),16) 
-    , N'█' [██], mi.IndexType, mi.is_unique_constraint, mi.index_id, mi.IndexName, mi.KeyCols, mi.InclColsNoCLK
+    , N'█' [██], mi.IndexType, mi.is_unique_constraint, mi.index_id, mi.FQIN, mi.IndexName, mi.KeyColIDs, mi.InclColsNoCLK
         , used_kb           = RIGHT(CONCAT(SPACE(16), FORMAT(mi.used_kb, 'N0')),16) 
         , reserved_kb       = RIGHT(CONCAT(SPACE(16), FORMAT(mi.reserved_kb, 'N0')),16)
         , ExtraColCount     = RIGHT(CONCAT(SPACE(16), m.ExtraColCount),16)
@@ -159,9 +167,8 @@ FROM #matches m
     JOIN #tmp_idx si ON si.ID = m.SourceID
     JOIN #tmp_idx mi ON mi.ID = m.MatchID
 WHERE 1=1
---  AND m.MatchRank = 1
-ORDER BY  si.SchemaName, si.ObjectName, mi.index_id
-        , m.MatchRank, m.ExtraColCount, si.index_id;
+--    AND m.MatchRank = 1
+ORDER BY  si.SchemaName, si.ObjectName, m.MatchRank, m.ID
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
