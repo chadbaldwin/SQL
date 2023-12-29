@@ -48,14 +48,20 @@ SELECT DatabaseName       = DB_NAME()
     , ObjectTypeCode      = o.[type] COLLATE DATABASE_DEFAULT
     , IndexType           = i.[type_desc] COLLATE DATABASE_DEFAULT
     , IsUnique            = i.is_unique
+-- data_space_id
     , IgnoreDupKey        = i.[ignore_dup_key]
+	, IsPrimaryKey		  = i.is_primary_key
+	, IsUniqueConstraint  = i.is_unique_constraint
     , [FillFactor]        = i.fill_factor
     , IsPadded            = i.is_padded
     , IsDisabled          = i.is_disabled
+-- is_ignored_in_optimization
     , AllowRowLocks       = i.[allow_row_locks]
     , AllowPageLocks      = i.[allow_page_locks]
     , HasFilter           = i.has_filter
     , FilterDefinition    = i.filter_definition
+-- compression_delay
+-- suppress_dup_key_messages
     , StatNoRecompute     = st.no_recompute
     , StatIsIncremental   = st.is_incremental
     , DataCompressionType = p.[data_compression_desc] COLLATE DATABASE_DEFAULT
@@ -84,7 +90,6 @@ WHERE i.[type] > 0 -- Exclude heaps
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND o.is_ms_shipped = 0
     -- Support limitations -->
-    AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 -- PK's and Unique constraints have their own syntax
     AND fg.[type] = 'FG'; -- FD (FILESTREAM), FX (Memory-Optimized), PS (Partition Scheme), etc - not supported
 ------------------------------------------------------------------------------
 
@@ -92,17 +97,22 @@ WHERE i.[type] > 0 -- Exclude heaps
 -- Templates
 DECLARE @SqlDrop    nvarchar(4000) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};',
         @SqlRebuild nvarchar(4000) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD',
-        @SqlDisable nvarchar(4000) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;';
+        @SqlDisable nvarchar(4000) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
+		@SqlAddPKUQ nvarchar(4000) = 'ALTER TABLE {{Schema}}.{{Object}}' + @d + 'ADD CONSTRAINT {{Index}} {{ConstraintType}} {{IndexType}} ({{Keys}});';
 
 IF OBJECT_ID('tempdb..#output', 'U') IS NOT NULL DROP TABLE #output; --SELECT * FROM #output
-SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, i.IndexType, i.IsDisabled, i.HasFilter
+SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, i.IndexType, i.IsPrimaryKey, i.IsUniqueConstraint, i.IsDisabled, i.HasFilter
     , KeyCols              = REPLACE(i.KeyColsNQO, @d, ', ')
     , InclCols             = REPLACE(i.InclColsNQ, @d, ', ')
     , SuggestedName        = c.SuggestedName
     , MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
     , FQIN                 = CONCAT_WS('.', q.DatabaseName, q.SchemaName, q.ObjectName, q.IndexName)
     , CreateOn             = c.CreateBase + ' ' + c.OnObject
-    , CreateScript         = CONCAT_WS(@d, c.CreateBase, c.OnObject + ' ' + c.KeyCols, c.InclCols, c.Filtered, c.Options, c.DataSpace) + ';'
+    , CreateScript         = CASE
+								WHEN i.IsPrimaryKey = 1       THEN CONCAT_WS(@d, REPLACE(s.SqlAddPKUQScript, '{{ConstraintType}}', 'PRIMARY KEY'), c.Options, c.DataSpace)
+								WHEN i.IsUniqueConstraint = 1 THEN CONCAT_WS(@d, REPLACE(s.SqlAddPKUQScript, '{{ConstraintType}}', 'UNIQUE'     ), c.Options, c.DataSpace)
+								ELSE CONCAT_WS(@d, c.CreateBase, c.OnObject + ' ' + c.KeyCols, c.InclCols, c.Filtered, c.Options, c.DataSpace) + ';'
+							 END
     , DropScript           = s.DropScript
     , RebuildScript        = CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';'
     , DisableScript        = s.DisableScript
@@ -117,9 +127,12 @@ FROM #tmp_indexes i
 	) q
     -- Create the base scripts for each section
     CROSS APPLY (
-        SELECT DropScript    = REPLACE(REPLACE(REPLACE(@SqlDrop   , '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
-            ,  RebuildScript = REPLACE(REPLACE(REPLACE(@SqlRebuild, '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
-            ,  DisableScript = REPLACE(REPLACE(REPLACE(@SqlDisable, '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
+        SELECT DropScript       =         REPLACE(REPLACE(REPLACE(@SqlDrop   , '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
+            ,  RebuildScript    =         REPLACE(REPLACE(REPLACE(@SqlRebuild, '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
+            ,  DisableScript    =         REPLACE(REPLACE(REPLACE(@SqlDisable, '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
+			,  SqlAddPKUQScript = REPLACE(REPLACE(
+										  REPLACE(REPLACE(REPLACE(@SqlAddPKUQ, '{{Schema}}', q.SchemaName), '{{Object}}', q.ObjectName), '{{Index}}', q.IndexName)
+								  , '{{IndexType}}', i.IndexType), '{{Keys}}', REPLACE(i.KeyColsNQO, @d, ', '))
     ) s
     CROSS APPLY (
         SELECT CreateOptions = STRING_AGG(IIF(opt.IsBuildOption = 0, CONCAT(opt.n, '=', opt.v), NULL), ', ')
