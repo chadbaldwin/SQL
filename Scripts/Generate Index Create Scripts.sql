@@ -81,7 +81,7 @@ FROM sys.indexes i
             CROSS APPLY (SELECT ColNameQuoteOrder = CONCAT_WS(' ', q.ColNameQuote, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
-WHERE i.[type] > 0 -- Exclude heaps
+WHERE i.[type] > 0 -- Exclude index heap records (just the index, not the object, we still want NONCLUSTERED indexes on heaps)
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND o.is_ms_shipped = 0
     -- Support limitations -->
@@ -103,10 +103,7 @@ SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, 
     , MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
     , FQIN                 = CONCAT_WS('.', q.DatabaseName, q.SchemaName, q.ObjectName, q.IndexName)
     , CreateOn             = IIF(x.IsConstraint = 1, c.AlterTable+' '+c.AddConstraint, c.CreateBase+' '+c.OnObject)
-    , CreateScript         = CONCAT_WS(@d,
-								IIF(x.IsConstraint = 1, c.AlterTable+@d+c.AddConstraint, c.CreateBase+@d+c.OnObject)+' '+c.KeyCols
-								, c.InclCols, c.Filtered, c.Options, c.FG
-							 ) + ';'
+    , CreateScript         = CONCAT_WS(@d, IIF(x.IsConstraint = 1, c.AlterTable+@d+c.AddConstraint, c.CreateBase+@d+c.OnObject)+' '+c.KeyCols, c.InclCols, c.Filtered, c.Options, c.FG)+';'
     , DropScript           = IIF(x.IsConstraint = 1, s.DropPKUQScript, s.DropScript)
     , RebuildScript        = IIF(x.IsConstraint = 1, NULL, CONCAT_WS(' ', s.RebuildScript, c.RebuildOptions)+';')
     , DisableScript        = IIF(x.IsConstraint = 1, NULL, s.DisableScript)
@@ -162,10 +159,9 @@ FROM #tmp_indexes i
     CROSS APPLY ( -- Optional parts should return NULL
         SELECT CreateBase     = 'CREATE '+x.IndexType+' INDEX '+q.IndexName                               -- CREATE UNIQUE NONCLUSTERED INDEX [IX_TableName]
             ,  OnObject       = 'ON '+q.SchemaName+'.'+q.ObjectName                                       -- ON [dbo].[TableName]
-            ,  KeyCols        = '('+REPLACE(i.KeyColsNQO, @d, ', ')+')'                                   -- ([KeyCol1], [KeyCol2], [KeyCol3])
-            --
             ,  AlterTable     = 'ALTER TABLE '+q.SchemaName+'.'+q.ObjectName                              -- ALTER TABLE [dbo].[TableName]
             ,  AddConstraint  = 'ADD CONSTRAINT '+q.IndexName+' '+x.ConstraintType                        -- ADD CONSTRAINT [PK_ConstraintName]
+            ,  KeyCols        = '('+REPLACE(i.KeyColsNQO, @d, ', ')+')'                                   -- ([KeyCol1], [KeyCol2], [KeyCol3])
             -- Optional parts
             ,  InclCols       = 'INCLUDE ('+REPLACE(i.InclColsNQ, @d, ', ')+')'                           -- INCLUDE ([ColA], [ColB], [ColC])
             ,  Filtered       = 'WHERE '+i.FilterDefinition                                               -- WHERE ([ColA] = 123)
