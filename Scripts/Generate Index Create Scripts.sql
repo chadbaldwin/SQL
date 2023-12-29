@@ -141,7 +141,7 @@ FROM #tmp_indexes i
             VALUES 
                 -- Index settings/configuration
                   (0, 'PAD_INDEX'                  , IIF(i.IsPadded = 1            , 'ON',   NULL))
-                , (0, 'FILLFACTOR'                 , CONVERT(nvarchar(3), NULLIF(i.[FillFactor], 0)))
+                , (0, 'FILLFACTOR'                 , IIF(i.[FillFactor] NOT IN (0,100), CONVERT(nvarchar(3), i.[FillFactor]), NULL)) -- 0 means to use the default, which is 100
                 , (0, 'IGNORE_DUP_KEY'             , IIF(i.IgnoreDupKey = 1        , 'ON',   NULL))
                 , (0, 'STATISTICS_NORECOMPUTE'     , IIF(i.StatNoRecompute = 1     , 'ON',   NULL))
                 , (0, 'STATISTICS_INCREMENTAL'     , IIF(i.StatIsIncremental = 1   , 'ON',   NULL))
