@@ -93,7 +93,7 @@ WHERE i.[type] > 0 -- Exclude heaps
 DECLARE @SqlDrop    nvarchar(4000) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schema}}.{{Object}};',
         @SqlRebuild nvarchar(4000) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} REBUILD',
         @SqlDisable nvarchar(4000) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
-        @SqlAddPKUQ nvarchar(4000) = 'ALTER TABLE {{Schema}}.{{Object}}' + @d + 'ADD CONSTRAINT {{Index}} {{ConstraintType}} {{IndexType}} ({{Keys}});';
+        @SqlAddPKUQ nvarchar(4000) = 'ALTER TABLE {{Schema}}.{{Object}}' + @d + 'ADD CONSTRAINT {{Index}} {{ConstraintType}} {{IndexType}} ({{Keys}})';
 
 IF OBJECT_ID('tempdb..#output', 'U') IS NOT NULL DROP TABLE #output; --SELECT * FROM #output
 SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, i.IndexType, i.IsPrimaryKey, i.IsUniqueConstraint, i.IsDisabled, i.HasFilter
@@ -102,12 +102,12 @@ SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, 
     , SuggestedName        = c.SuggestedName
     , MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
     , FQIN                 = CONCAT_WS('.', q.DatabaseName, q.SchemaName, q.ObjectName, q.IndexName)
-    , CreateOn             = c.CreateBase + ' ' + c.OnObject
+    , CreateOn             = IIF(i.IsPrimaryKey = 1 OR i.IsUniqueConstraint = 1, REPLACE(c.AlterAddPKUQ, @d, ' '), c.CreateBase + ' ' + c.OnObject)
     , CreateScript         = CASE
-                                WHEN i.IsPrimaryKey = 1       THEN CONCAT_WS(@d, REPLACE(s.SqlAddPKUQScript, '{{ConstraintType}}', 'PRIMARY KEY'), c.Options, c.DataSpace)
-                                WHEN i.IsUniqueConstraint = 1 THEN CONCAT_WS(@d, REPLACE(s.SqlAddPKUQScript, '{{ConstraintType}}', 'UNIQUE'     ), c.Options, c.DataSpace)
-                                ELSE CONCAT_WS(@d, c.CreateBase, c.OnObject + ' ' + c.KeyCols, c.InclCols, c.Filtered, c.Options, c.DataSpace) + ';'
-                             END
+                                WHEN i.IsPrimaryKey = 1       THEN CONCAT_WS(@d, c.AlterAddPKUQ, c.Options, c.DataSpace)
+                                WHEN i.IsUniqueConstraint = 1 THEN CONCAT_WS(@d, c.AlterAddPKUQ, c.Options, c.DataSpace)
+                                ELSE CONCAT_WS(@d, c.CreateBase, c.OnObject + ' ' + c.KeyCols, c.InclCols, c.Filtered, c.Options, c.DataSpace)
+                             END + ';'
     , DropScript           = s.DropScript
     , RebuildScript        = CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';'
     , DisableScript        = s.DisableScript
@@ -164,8 +164,10 @@ FROM #tmp_indexes i
             ,  Options       = 'WITH ('+NULLIF(CONCAT_WS(', ', x.CreateOptions, x.BuildOptions), '')+')'                        -- WITH (PAD_INDEX=ON, FILLFACTOR=85, ONLINE=ON)
             ,  DataSpace     = 'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)                                -- ON [Secondary]
 
+            ,  AlterAddPKUQ  = REPLACE(s.SqlAddPKUQScript, '{{ConstraintType}}', CASE WHEN i.IsPrimaryKey = 1 THEN 'PRIMARY KEY' WHEN i.IsUniqueConstraint = 1 THEN 'UNIQUE' ELSE NULL END)
+
             ,  BuildOptions  = 'WITH ('+x.BuildOptions+')'
-            ,  SuggestedName = LEFT(CONCAT('IX_', i.ObjectName, '_', REPLACE(i.KeyColsN, @d, '_')), 128)
+            ,  SuggestedName =	LEFT(CONCAT_WS('_', CASE WHEN i.IsPrimaryKey = 1 THEN 'PK' WHEN i.IsUniqueConstraint = 1 THEN 'UQ' ELSE 'IX' END, i.ObjectName, REPLACE(i.KeyColsN, @d, '_')), 128)
     ) c;
 ------------------------------------------------------------------------------
 
