@@ -108,9 +108,9 @@ SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, 
                                 WHEN i.IsUniqueConstraint = 1 THEN CONCAT_WS(@d, c.AlterAddPKUQ, c.Options, c.DataSpace)
                                 ELSE CONCAT_WS(@d, c.CreateBase, c.OnObject + ' ' + c.KeyCols, c.InclCols, c.Filtered, c.Options, c.DataSpace)
                              END + ';'
-    , DropScript           = s.DropScript
-    , RebuildScript        = CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';'
-    , DisableScript        = s.DisableScript
+    , DropScript           = IIF(i.IsPrimaryKey = 1 OR i.IsUniqueConstraint = 1, NULL, s.DropScript)
+    , RebuildScript        = IIF(i.IsPrimaryKey = 1 OR i.IsUniqueConstraint = 1, NULL, CONCAT_WS(' ', s.RebuildScript, c.BuildOptions) + ';')
+    , DisableScript        = IIF(i.IsPrimaryKey = 1 OR i.IsUniqueConstraint = 1, NULL, s.DisableScript)
 INTO #output
 FROM #tmp_indexes i
     CROSS APPLY (
@@ -230,10 +230,10 @@ END;
 IF (@BatchSeparator = 1 OR @TrailingLineBreak = 1)
 BEGIN;
     UPDATE o
-    SET o.CreateScript  = CONCAT(o.CreateScript , x.Sep),
-        o.DropScript    = CONCAT(o.DropScript   , x.Sep),
-        o.RebuildScript = CONCAT(o.RebuildScript, x.Sep),
-        o.DisableScript = CONCAT(o.DisableScript, x.Sep)
+    SET o.CreateScript  = o.CreateScript  + x.Sep,
+        o.DropScript    = o.DropScript    + x.Sep,
+        o.RebuildScript = o.RebuildScript + x.Sep,
+        o.DisableScript = o.DisableScript + x.Sep
     FROM #output o
         CROSS APPLY (
             SELECT Sep = CONCAT(IIF(@BatchSeparator = 1, @crlf + 'GO', NULL), IIF(@TrailingLineBreak = 1, @crlf + @crlf, NULL))
