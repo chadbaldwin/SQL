@@ -108,7 +108,7 @@ SELECT i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.ObjectTypeCode, 
 								, c.InclCols, c.Filtered, c.Options, c.FG
 							 ) + ';'
     , DropScript           = IIF(x.IsConstraint = 1, s.DropPKUQScript, s.DropScript)
-    , RebuildScript        = IIF(x.IsConstraint = 1, NULL, s.RebuildScript+' '+c.RebuildOptions+';')
+    , RebuildScript        = IIF(x.IsConstraint = 1, NULL, CONCAT_WS(' ', s.RebuildScript, c.RebuildOptions)+';')
     , DisableScript        = IIF(x.IsConstraint = 1, NULL, s.DisableScript)
 	, c.Filtered
 INTO #output
