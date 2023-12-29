@@ -1,7 +1,6 @@
 ﻿/*
     Unsupported options:
     * Filegroup types: Filestream, Memory-Optimized, Partitioned
-    * Index types: Primary keys, unique constraints - Due to them having their own syntax
     * Special index types: XML, HASH, Columnstore, Fulltext, Spatial
     * 2019+ new features - XML_COMPRESSION, OPTIMIZE_FOR_SEQUENTIAL_KEY, etc
 
@@ -9,10 +8,6 @@
     * Add output message to ELSE for IF EXISTS option to indicate an action was skipped
     * If an index is disabled then generate create statement but within a multi-line comment
     * For Rebuild script, add option to check if disabled first? Or separate as an "EnableScript"
-    * Break up the generation script so that it's easier to read. It could instead be a series of
-      update statements which add the various items, like not exists, batch separator, etc. These
-      things can be done after the generation of the lowest level statement and it would make reading
-      the code easier to understand.
 */
 ------------------------------------------------------------------------------
 
