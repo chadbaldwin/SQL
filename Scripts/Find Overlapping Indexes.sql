@@ -165,8 +165,7 @@ IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT *
 SELECT ID = IDENTITY(int), i.[object_id], i.index_id
     , SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]
     , FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))
-    , ObjectType = o.[type_desc], IndexType = i.[type_desc], filter_definition = COALESCE(i.filter_definition, '')
-    , i.is_unique
+    , ObjectType = o.[type_desc], IndexType = i.[type_desc], filter_definition = COALESCE(i.filter_definition, ''), i.is_unique
     , ic.OrigKeyColIDs, OrigInclColIDs = COALESCE(ic.OrigInclColIDs, '')
     , ic.PhysKeyColIDs, PhysInclColIDs = COALESCE(ic.PhysInclColIDs, '')
     , ic.PhysKeyCols, ic.PhysInclCols, ic.OrigKeyCols, ic.OrigInclCols
@@ -184,17 +183,26 @@ FROM sys.indexes i
         FROM sys.dm_db_partition_stats ps
         GROUP BY ps.[object_id], ps.index_id
     ) ixs ON ixs.[object_id] = i.[object_id] AND ixs.index_id = i.index_id
-    /*  SQL Server is really awesome in that it doesn't do any sort of re-ordering of the filter definition when it's created.
-        It does reformat the definition, but I'm not sure how it determines the order (original? different?).
-        That said...Filters can only use 'AND' statements, it cannot use 'OR'. So that means we can split, re-order and concat
-        the filters to create a more reliable string for matching.
-    */
 WHERE o.is_ms_shipped = 0 -- exclude system objects
     AND i.is_disabled = 0 -- exclude disabled
     AND i.is_hypothetical = 0;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+    /*  SQL Server is really awesome (sarcasm) in that it doesn't do any sort of re-ordering of the filter definition when
+        it's created. It does reformat the definition adding parens and brackets, but I'm not sure how it determines the
+        order of the predicates (original? different?). That said...Filters can only use 'AND' statements, they cannot use
+        'OR'. So that means we can split, re-order and concat the filters to create a more reliable string for matching.
+
+        For example, we have two filtered indexes, with their filter definitions defined as:
+        IndexA: WHERE ([ColA] = 1 AND [ColB] > 2)
+        IndexB: WHERE ([ColB] > 2 AND [ColA] = 1)
+
+        This will re-arrange the predicates so that both will become:
+        WHERE ([ColA] = 1 AND [ColB] > 2)
+
+        And any comparisons will see them as a match.
+    */
     UPDATE i SET i.filter_definition = fd.NewFilterDef
     FROM #tmp_idx i
         CROSS APPLY (
@@ -219,7 +227,7 @@ WHERE o.is_ms_shipped = 0 -- exclude system objects
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-    -- Duplicate - exact duplicates
+    -- Duplicate - exact duplicates - comparing defined structure
     INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID)
     SELECT 1, 'Duplicate - Definitional', x.ID, y.ID
     FROM #tmp_idx x
@@ -235,6 +243,7 @@ WHERE o.is_ms_shipped = 0 -- exclude system objects
                 AND NOT (x.is_unique = 0 AND i.is_unique = 1) -- Not a valid duplicate - if the left is not-unique but the right is, then the right is not a droppable dupe
         ) y
 
+    -- Duplicate - exact duplicates - comparing physical structure
     INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID)
     SELECT 2, 'Duplicate - Physical', x.ID, y.ID
     FROM #tmp_idx x
@@ -294,6 +303,7 @@ WHERE o.is_ms_shipped = 0 -- exclude system objects
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+    -- Clean up duplicate pairings and prioritize by match rank
     DELETE x
     FROM (
         SELECT rn = ROW_NUMBER() OVER (PARTITION BY x.DeDupID ORDER BY m.MatchRank, m.ExtraColCount, m.SourceID, m.MatchID)
