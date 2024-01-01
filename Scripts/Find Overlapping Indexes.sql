@@ -353,7 +353,7 @@
         JOIN #idx_col_cnt icc ON icc.[object_id] = t.[object_id] AND icc.index_id = t.index_id
         LEFT JOIN #idx_col_cnt ixc ON ixc.[object_id] = t.[object_id] AND ixc.index_type = 1
         JOIN #obj_col_cnt occ ON occ.[object_id] = t.[object_id]
-    WHERE x.MatchRank IN (1,2)
+--  WHERE x.MatchRank IN (1,2)
     ORDER BY t.SchemaName, t.ObjectName, x.MatchType;
 ------------------------------------------------------------------------------
 
