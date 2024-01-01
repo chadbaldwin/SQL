@@ -195,35 +195,27 @@ WHERE o.is_ms_shipped = 0 -- exclude system objects
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-UPDATE i SET i.filter_definition = fd.NewFilterDef
-FROM #tmp_idx i
-    CROSS APPLY (
-        /*
-        SELECT NewFilterDef = CONCAT(N'(', STRING_AGG(x.[value], N' AND ') WITHIN GROUP (ORDER BY x.[value]), N')')
-        FROM STRING_SPLIT(REPLACE(SUBSTRING(i.filter_definition, 2, LEN(i.filter_definition) - 2), N' AND ', NCHAR(9999)), NCHAR(9999)) x
-        WHERE i.filter_definition IS NOT NULL
-        GROUP BY ()
-        --*/
-        --/*
-        SELECT NewFilterDef = CONCAT(N'(', STRING_AGG(x.StringName, N' AND ') WITHIN GROUP (ORDER BY x.StringName), N')')
-        FROM dbo.fn_SplitString(REPLACE(SUBSTRING(i.filter_definition, 2, LEN(i.filter_definition) - 2), N' AND ', NCHAR(9999)), NCHAR(9999)) x
-        WHERE i.filter_definition IS NOT NULL
-        GROUP BY ()
-        --*/
-    ) fd
-WHERE LEN(i.filter_definition) > 0;
+    UPDATE i SET i.filter_definition = fd.NewFilterDef
+    FROM #tmp_idx i
+        CROSS APPLY (
+            SELECT NewFilterDef = CONCAT(N'(', STRING_AGG(x.[value], N' AND ') WITHIN GROUP (ORDER BY x.[value]), N')')
+            FROM STRING_SPLIT(REPLACE(SUBSTRING(i.filter_definition, 2, LEN(i.filter_definition) - 2), N' AND ', NCHAR(9999)), NCHAR(9999)) x
+            WHERE i.filter_definition IS NOT NULL
+            GROUP BY ()
+        ) fd
+    WHERE LEN(i.filter_definition) > 0;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-IF OBJECT_ID('tempdb..#matches','U') IS NOT NULL DROP TABLE #matches; --SELECT * FROM #matches
-CREATE TABLE #matches (
-    ID              int         NOT NULL IDENTITY,
-    MatchRank       int         NOT NULL,
-    MatchType       varchar(50) NOT NULL,
-    SourceID        int         NOT NULL,
-    MatchID         int         NOT NULL,
-    ExtraColCount   int         NOT NULL DEFAULT(0),
-);
+    IF OBJECT_ID('tempdb..#matches','U') IS NOT NULL DROP TABLE #matches; --SELECT * FROM #matches
+    CREATE TABLE #matches (
+        ID              int         NOT NULL IDENTITY,
+        MatchRank       int         NOT NULL,
+        MatchType       varchar(50) NOT NULL,
+        SourceID        int         NOT NULL,
+        MatchID         int         NOT NULL,
+        ExtraColCount   int         NOT NULL DEFAULT(0),
+    );
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -260,88 +252,78 @@ CREATE TABLE #matches (
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-DECLARE @Mergeable_ExtraColMax  tinyint = 4;
+    DECLARE @Mergeable_ExtraColMax  tinyint = 4;
 
--- Overlapping / Covered
-INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID)
-SELECT 3, 'Overlapping', x.ID, y.ID
-FROM #tmp_idx x
-    CROSS APPLY (
-        SELECT i.ID
-        FROM #tmp_idx i
-        WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
-            AND i.filter_definition = x.filter_definition -- If it's filtered, make sure they match
-            --
-            AND x.PhysKeyColIDs LIKE i.PhysKeyColIDs + '%' AND x.PhysKeyColIDs <> i.PhysKeyColIDs -- Keys are covering, but not duplicate
-            AND i.InclBitmap1 & x.InclBitmap1 = i.InclBitmap1   -- Includes are covering, including duplicates
-            AND i.InclBitmap2 & x.InclBitmap2 = i.InclBitmap2
-            AND i.InclBitmap3 & x.InclBitmap3 = i.InclBitmap3
-        --  AND CONCAT_WS('|', i.InclBitmap1, i.InclBitmap2, i.InclBitmap3) <> CONCAT_WS('|', x.InclBitmap1, x.InclBitmap2, x.InclBitmap3) -- Exclude duplicate includes
-    ) y
-------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------
--- Mergeable
-INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID, ExtraColCount)
-SELECT 4, 'Mergeable', x.ID, y.ID, y.ExtraColCount
-FROM #tmp_idx x
-    CROSS APPLY (
-        SELECT i.ID, c.ExtraColCount
-        FROM #tmp_idx i
-            CROSS APPLY (
-                SELECT ExtraColCount = sys.fn_numberOf1InVarBinary(~x.InclBitmap1 & i.InclBitmap1)
-                                     + sys.fn_numberOf1InVarBinary(~x.InclBitmap2 & i.InclBitmap2)
-                                     + sys.fn_numberOf1InVarBinary(~x.InclBitmap3 & i.InclBitmap3)
-            ) c
-        WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
-            AND i.filter_definition = x.filter_definition -- If it's filtered, make sure they match
-            --
-            AND x.PhysKeyColIDs LIKE i.PhysKeyColIDs + '%' -- Keys are covering, including duplicates
-            AND (c.ExtraColCount >= 1 AND c.ExtraColCount <= @Mergeable_ExtraColMax) -- Includes are off by small number
-    ) y
+    -- Overlapping / Covered
+    INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID)
+    SELECT 3, 'Overlapping', x.ID, y.ID
+    FROM #tmp_idx x
+        CROSS APPLY (
+            SELECT i.ID
+            FROM #tmp_idx i
+            WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
+                AND i.filter_definition = x.filter_definition -- If it's filtered, make sure they match
+                --
+                AND x.PhysKeyColIDs LIKE i.PhysKeyColIDs + '%' AND x.PhysKeyColIDs <> i.PhysKeyColIDs -- Keys are covering, but not duplicate
+                AND i.InclBitmap1 & x.InclBitmap1 = i.InclBitmap1   -- Includes are covering, including duplicates
+                AND i.InclBitmap2 & x.InclBitmap2 = i.InclBitmap2
+                AND i.InclBitmap3 & x.InclBitmap3 = i.InclBitmap3
+            --  AND CONCAT_WS('|', i.InclBitmap1, i.InclBitmap2, i.InclBitmap3) <> CONCAT_WS('|', x.InclBitmap1, x.InclBitmap2, x.InclBitmap3) -- Exclude duplicate includes
+        ) y
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-DELETE x
-FROM (
-    SELECT rn = ROW_NUMBER() OVER (PARTITION BY x.DeDupID ORDER BY m.MatchRank, m.ExtraColCount, m.SourceID, m.MatchID)
-    FROM #matches m
-        CROSS APPLY (SELECT DeDupID = IIF(SourceID > MatchID, CONCAT(MatchID, '_', SourceID), CONCAT(SourceID, '_', MatchID))) x
-) x
-WHERE x.rn > 1
+    -- Mergeable
+    INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID, ExtraColCount)
+    SELECT 4, 'Mergeable', x.ID, y.ID, y.ExtraColCount
+    FROM #tmp_idx x
+        CROSS APPLY (
+            SELECT i.ID, c.ExtraColCount
+            FROM #tmp_idx i
+                CROSS APPLY (
+                    SELECT ExtraColCount = sys.fn_numberOf1InVarBinary(~x.InclBitmap1 & i.InclBitmap1)
+                                         + sys.fn_numberOf1InVarBinary(~x.InclBitmap2 & i.InclBitmap2)
+                                         + sys.fn_numberOf1InVarBinary(~x.InclBitmap3 & i.InclBitmap3)
+                ) c
+            WHERE i.[object_id] = x.[object_id] AND i.index_id <> x.index_id -- Don't match itself
+                AND i.filter_definition = x.filter_definition -- If it's filtered, make sure they match
+                --
+                AND x.PhysKeyColIDs LIKE i.PhysKeyColIDs + '%' -- Keys are covering, including duplicates
+                AND (c.ExtraColCount >= 1 AND c.ExtraColCount <= @Mergeable_ExtraColMax) -- Includes are off by small number
+        ) y
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-SELECT x.MatchType, x.MatchRank, x.ExtraColCount
-    , x.SchemaName, x.ObjectName, x.IndexName
---  , x.FQIN
-    , x.ObjectType, x.IndexType, x.OrigKeyColIDs, x.OrigInclColIDs, x.PhysKeyColIDs, x.PhysInclColIDs, x.filter_definition
-    , CurrentIndexColCount      = icc.column_count
-    , ClusteredIndexColCount    = ixc.column_count
-    , ObjectColCount            = occ.column_count
-    , x.used_kb, x.reserved_kb, x.ObjectRowCount, x.IndexRowCount
-    , i.is_unique, i.data_space_id, i.[ignore_dup_key], i.is_primary_key, i.is_unique_constraint, i.fill_factor, i.is_padded, i.is_disabled, i.[allow_page_locks], i.has_filter
-FROM (
-    SELECT m.MatchType, m.MatchRank, m.ExtraColCount
-        , i.[object_id], i.index_id, i.SchemaName, i.ObjectName, i.IndexName, i.FQIN, i.ObjectType, i.IndexType
-        , i.OrigKeyColIDs, i.OrigInclColIDs, i.PhysKeyColIDs, i.PhysInclColIDs
-        , i.InclBitmap1, i.InclBitmap2, i.InclBitmap3, i.ObjectRowCount, i.IndexRowCount, i.used_kb, i.reserved_kb, i.filter_definition
-    FROM #matches m
-        JOIN #tmp_idx i ON i.ID = m.SourceID
-    UNION
-    SELECT m.MatchType, m.MatchRank, m.ExtraColCount
-        , i.[object_id], i.index_id, i.SchemaName, i.ObjectName, i.IndexName, i.FQIN, i.ObjectType, i.IndexType
-        , i.OrigKeyColIDs, i.OrigInclColIDs, i.PhysKeyColIDs, i.PhysInclColIDs
-        , i.InclBitmap1, i.InclBitmap2, i.InclBitmap3, i.ObjectRowCount, i.IndexRowCount, i.used_kb, i.reserved_kb, i.filter_definition
-    FROM #matches m
-        JOIN #tmp_idx i ON i.ID = m.MatchID
-) x
-    JOIN sys.indexes i ON i.[object_id] = x.[object_id] AND i.index_id = x.index_id
-    JOIN #idx_col_cnt icc ON icc.[object_id] = x.[object_id] AND icc.index_id = x.index_id
-    LEFT JOIN #idx_col_cnt ixc ON ixc.[object_id] = x.[object_id] AND ixc.index_type = 1
-    JOIN #obj_col_cnt occ ON occ.[object_id] = x.[object_id]
-WHERE x.MatchRank IN (1,2)
-ORDER BY x.SchemaName, x.ObjectName, x.MatchType
+    DELETE x
+    FROM (
+        SELECT rn = ROW_NUMBER() OVER (PARTITION BY x.DeDupID ORDER BY m.MatchRank, m.ExtraColCount, m.SourceID, m.MatchID)
+        FROM #matches m
+            CROSS APPLY (SELECT DeDupID = IIF(SourceID > MatchID, CONCAT(MatchID, '_', SourceID), CONCAT(SourceID, '_', MatchID))) x
+    ) x
+    WHERE x.rn > 1
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+    SELECT x.MatchType, x.MatchRank, x.ExtraColCount
+        , t.SchemaName, t.ObjectName, t.IndexName--, x.FQIN
+        , t.ObjectType, t.IndexType, t.OrigKeyColIDs, t.OrigInclColIDs, t.PhysKeyColIDs, t.PhysInclColIDs, t.filter_definition
+        , CurrentIndexColCount      = icc.column_count
+        , ClusteredIndexColCount    = ixc.column_count
+        , ObjectColCount            = occ.column_count
+        , t.used_kb, t.reserved_kb, t.ObjectRowCount, t.IndexRowCount
+        , i.is_unique, i.data_space_id, i.[ignore_dup_key], i.is_primary_key, i.is_unique_constraint, i.fill_factor, i.is_padded, i.is_disabled, i.[allow_page_locks], i.has_filter
+    FROM (
+        SELECT ID = SourceID, MatchType, MatchRank, ExtraColCount FROM #matches
+        UNION
+        SELECT ID = MatchID , MatchType, MatchRank, ExtraColCount FROM #matches
+    ) x
+        JOIN #tmp_idx t ON t.ID = x.ID
+        JOIN sys.indexes i ON i.[object_id] = t.[object_id] AND i.index_id = t.index_id
+        JOIN #idx_col_cnt icc ON icc.[object_id] = t.[object_id] AND icc.index_id = t.index_id
+        LEFT JOIN #idx_col_cnt ixc ON ixc.[object_id] = t.[object_id] AND ixc.index_type = 1
+        JOIN #obj_col_cnt occ ON occ.[object_id] = t.[object_id]
+    WHERE x.MatchRank IN (1,2)
+    ORDER BY t.SchemaName, t.ObjectName, x.MatchType;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
