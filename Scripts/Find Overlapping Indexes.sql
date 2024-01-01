@@ -1,11 +1,3 @@
-/*  Needs to be `bigint` for reasons...
-    decimal(38,0) is implicitly converted to float when getting the value of POWER(@2, N)
-    With float, you lose precision...So 4611686018427387904 (2^62) becomes 4611686018427387900
-    because it wants to treat it as 4.61168601842739E+18.
-
-    However, if you use bigint...then it always treats it as a bigint and no precision is lost.
-*/
-
 /*  Types of overlap - All comparisons are include col ordinal insensitive:
     - Duplicate - entire index is duplicated - key cols, key ordinal, key sort, include cols
         - e.g. IndexA: (A,-B,C) Incl (D,F,E)   ---   IndexB: (A,-B,C) Incl (F,E,D)
@@ -123,6 +115,13 @@
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+    /*  Needs to be `bigint` for reasons...
+        decimal(38,0) is implicitly converted to float when getting the value of POWER(@2, N)
+        With float, you lose precision...So 4611686018427387904 (2^62) becomes 4611686018427387900
+        because it wants to treat it as 4.61168601842739E+18.
+
+        However, if you use bigint...then it always treats it as a bigint and no precision is lost.
+    */
     DECLARE @2 bigint  = 2;
 
     IF OBJECT_ID('tempdb..#idx_collapse','U') IS NOT NULL DROP TABLE #idx_collapse; --SELECT * FROM #idx_collapse ORDER BY [object_id], index_id
