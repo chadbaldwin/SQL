@@ -56,136 +56,136 @@
 ------------------------------------------------------------------------------
 -- Generate index column list that represents the physical index structure
 ------------------------------------------------------------------------------
-/*  Because the goal of this script is to find duplicate/overlapping indexes, we do not need
-    to worry about adding hidden columns for things like RID's for heaps and UNIQUIFIER's for
-    non-unique indexes.
-*/
-IF OBJECT_ID('tempdb..#tmp_idx_cols','U') IS NOT NULL DROP TABLE #tmp_idx_cols; --SELECT * FROM #tmp_idx_cols
-CREATE TABLE #tmp_idx_cols (
-    [object_id]         int           NOT NULL,
-    index_id            int           NOT NULL,
-    column_id           int           NOT NULL,
-    column_name         nvarchar(128) NOT NULL,
-    key_ordinal         int           NOT NULL,
-    is_descending_key   bit               NULL,
-    is_included_column  bit               NULL,
-    is_secret_column    bit               NULL DEFAULT (0),
-    rn                  int           NOT NULL,
-);
-
-INSERT INTO #tmp_idx_cols ([object_id], index_id, column_id, column_name, key_ordinal, is_descending_key, is_included_column, is_secret_column, rn)
-SELECT x.[object_id], x.index_id, x.column_id, c.[name], x.key_ordinal, x.is_descending_key, x.is_included_column, x.is_secret_column
-    /*
-        We order by is_included_column first so that we capture the "promoted" columns. Columns that are part of the include
-        column list in the defintion, but in the phsycial structure they are promoted to keys. Since includes don't have
-        a sort direction, we can just inherit what is in the clustered index.
-
-        Then we order by key_ordinal. This way we grab the existing index_columns record, rather than our new one. This is
-        necessary because we are not looking at is_descending_key. So whatever the definition has needs to take precedence.
-
-        What we end up with are missing clustered index columns appended as keys. And clustered index columns as includes
-        promoting to keys for non-unique indexes and for unique indexes they are only added as include columns.
+    /*  Because the goal of this script is to find duplicate/overlapping indexes, we do not need
+        to worry about adding hidden columns for things like RID's for heaps and UNIQUIFIER's for
+        non-unique indexes.
     */
-    , rn = ROW_NUMBER() OVER (PARTITION BY x.[object_id], x.index_id, x.column_id ORDER BY x.is_included_column, x.key_ordinal)
-FROM (
-    SELECT ic.[object_id], ic.index_id, ic.column_id
-            , ic.key_ordinal, ic.is_descending_key, ic.is_included_column
-            , is_secret_column = 0
-    FROM sys.index_columns ic
-    UNION
-    SELECT i.[object_id], i.index_id, ic.column_id
-        , key_ordinal = IIF(i.is_unique = 0, ic.key_ordinal + 1000000, 0) /* Just a hack to ensure the secret columns are always sorted to the end while also maintaining their clustered index ordinal position  */
-        , ic.is_descending_key
-        , is_included_column = i.is_unique /* This just happens to line up, if a non-clustered index is unique, then missing clustered index columns are added as includes instead */
-        , is_secret_column = 1
+    IF OBJECT_ID('tempdb..#tmp_idx_cols','U') IS NOT NULL DROP TABLE #tmp_idx_cols; --SELECT * FROM #tmp_idx_cols
+    CREATE TABLE #tmp_idx_cols (
+        [object_id]         int           NOT NULL,
+        index_id            int           NOT NULL,
+        column_id           int           NOT NULL,
+        column_name         nvarchar(128) NOT NULL,
+        key_ordinal         int           NOT NULL,
+        is_descending_key   bit               NULL,
+        is_included_column  bit               NULL,
+        is_secret_column    bit               NULL DEFAULT (0),
+        rn                  int           NOT NULL,
+    );
+
+    INSERT INTO #tmp_idx_cols ([object_id], index_id, column_id, column_name, key_ordinal, is_descending_key, is_included_column, is_secret_column, rn)
+    SELECT x.[object_id], x.index_id, x.column_id, c.[name], x.key_ordinal, x.is_descending_key, x.is_included_column, x.is_secret_column
+        /*
+            We order by is_included_column first so that we capture the "promoted" columns. Columns that are part of the include
+            column list in the defintion, but in the phsycial structure they are promoted to keys. Since includes don't have
+            a sort direction, we can just inherit what is in the clustered index.
+
+            Then we order by key_ordinal. This way we grab the existing index_columns record, rather than our new one. This is
+            necessary because we are not looking at is_descending_key. So whatever the definition has needs to take precedence.
+
+            What we end up with are missing clustered index columns appended as keys. And clustered index columns as includes
+            promoting to keys for non-unique indexes and for unique indexes they are only added as include columns.
+        */
+        , rn = ROW_NUMBER() OVER (PARTITION BY x.[object_id], x.index_id, x.column_id ORDER BY x.is_included_column, x.key_ordinal)
+    FROM (
+        SELECT ic.[object_id], ic.index_id, ic.column_id
+                , ic.key_ordinal, ic.is_descending_key, ic.is_included_column
+                , is_secret_column = 0
+        FROM sys.index_columns ic
+        UNION
+        SELECT i.[object_id], i.index_id, ic.column_id
+            , key_ordinal = IIF(i.is_unique = 0, ic.key_ordinal + 1000000, 0) /* Just a hack to ensure the secret columns are always sorted to the end while also maintaining their clustered index ordinal position  */
+            , ic.is_descending_key
+            , is_included_column = i.is_unique /* This just happens to line up, if a non-clustered index is unique, then missing clustered index columns are added as includes instead */
+            , is_secret_column = 1
+        FROM sys.indexes i
+            JOIN sys.index_columns ic ON ic.[object_id] = i.[object_id] AND ic.index_id = 1
+        WHERE i.[type] = 2
+    ) x
+        JOIN sys.columns c ON c.[object_id] = x.[object_id] AND c.column_id = x.column_id
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+    IF OBJECT_ID('tempdb..#idx_col_cnt','U') IS NOT NULL DROP TABLE #idx_col_cnt; --SELECT * FROM #idx_col_cnt
+    SELECT i.[object_id], i.index_id, index_type = i.[type], column_count = COUNT(*)
+    INTO #idx_col_cnt
     FROM sys.indexes i
-        JOIN sys.index_columns ic ON ic.[object_id] = i.[object_id] AND ic.index_id = 1
-    WHERE i.[type] = 2
-) x
-    JOIN sys.columns c ON c.[object_id] = x.[object_id] AND c.column_id = x.column_id
+        JOIN sys.index_columns ic ON ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
+    GROUP BY i.[object_id], i.index_id, i.[type]
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-IF OBJECT_ID('tempdb..#idx_col_cnt','U') IS NOT NULL DROP TABLE #idx_col_cnt; --SELECT * FROM #idx_col_cnt
-SELECT i.[object_id], i.index_id, index_type = i.[type], column_count = COUNT(*)
-INTO #idx_col_cnt
-FROM sys.indexes i
-    JOIN sys.index_columns ic ON ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
-GROUP BY i.[object_id], i.index_id, i.[type]
+    IF OBJECT_ID('tempdb..#obj_col_cnt','U') IS NOT NULL DROP TABLE #obj_col_cnt; --SELECT * FROM #obj_col_cnt
+    SELECT c.[object_id], column_count = COUNT(*)
+    INTO #obj_col_cnt
+    FROM sys.columns c
+    GROUP BY c.[object_id]
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-IF OBJECT_ID('tempdb..#obj_col_cnt','U') IS NOT NULL DROP TABLE #obj_col_cnt; --SELECT * FROM #obj_col_cnt
-SELECT c.[object_id], column_count = COUNT(*)
-INTO #obj_col_cnt
-FROM sys.columns c
-GROUP BY c.[object_id]
+    DECLARE @2 bigint  = 2;
+
+    IF OBJECT_ID('tempdb..#idx_collapse','U') IS NOT NULL DROP TABLE #idx_collapse; --SELECT * FROM #idx_collapse ORDER BY [object_id], index_id
+    SELECT ic.[object_id], ic.index_id
+        ,  OrigKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.OrigKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+        ,  OrigInclColIDs = STRING_AGG(id.OrigInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+        ,  PhysKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.PhysKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+        ,  PhysInclColIDs = STRING_AGG(id.PhysInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+        --
+        ,  OrigKeyCols    = STRING_AGG(n.OrigKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+        ,  OrigInclCols   = STRING_AGG(n.OrigInclColName                                            , ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+        ,  PhysKeyCols    = STRING_AGG(n.PhysKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+        ,  PhysInclCols   = STRING_AGG(n.PhysInclColName                                            , ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+        /*  Only supports tables with up to 189 columns....after that you're gonna have to edit the query yourself, just follow the pattern.
+            Magic number '63' - bigint is 8 bytes (64 bits). The 64th bit is used for signing (+/-), so the highest bit we can use is the 63rd bit position.
+            Also, someone please explain to me why bitwise operators don't support binary/varbinary on both sides? */
+        ,  InclBitmap1    = CONVERT(bigint, SUM(IIF(id.PhysInclColID > 63*0 AND id.PhysInclColID <= 63*1, POWER(@2, id.PhysInclColID-1 - 63*0), 0))) --   0 < column_id <=  63
+        ,  InclBitmap2    = CONVERT(bigint, SUM(IIF(id.PhysInclColID > 63*1 AND id.PhysInclColID <= 63*2, POWER(@2, id.PhysInclColID-1 - 63*1), 0))) --  63 < column_id <= 126
+        ,  InclBitmap3    = CONVERT(bigint, SUM(IIF(id.PhysInclColID > 63*2 AND id.PhysInclColID <= 63*3, POWER(@2, id.PhysInclColID-1 - 63*2), 0))) -- 126 < column_id <= 189
+    INTO #idx_collapse
+    FROM #tmp_idx_cols ic
+        JOIN sys.columns c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
+        CROSS APPLY (
+            SELECT OrigKeyColID    = IIF(ic.is_included_column = 0 AND ic.is_secret_column = 0, ic.column_id, NULL)
+                ,  OrigInclColID   = IIF(ic.is_included_column = 1 AND ic.is_secret_column = 0, ic.column_id, NULL)
+                ,  PhysKeyColID    = IIF(ic.is_included_column = 0 AND ic.rn = 1              , ic.column_id, NULL)
+                ,  PhysInclColID   = IIF(ic.is_included_column = 1 AND ic.rn = 1              , ic.column_id, NULL)
+        ) id
+        CROSS APPLY (
+            SELECT OrigKeyColName  = IIF(id.OrigKeyColID  IS NOT NULL, ic.column_Name, NULL)
+                ,  OrigInclColName = IIF(id.OrigInclColID IS NOT NULL, ic.column_Name, NULL)
+                ,  PhysKeyColName  = IIF(id.PhysKeyColID  IS NOT NULL, ic.column_Name, NULL)
+                ,  PhysInclColName = IIF(id.PhysInclColID IS NOT NULL, ic.column_Name, NULL)
+        ) n
+    GROUP BY ic.[object_id], ic.index_id;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-DECLARE @2 bigint  = 2;
-
-IF OBJECT_ID('tempdb..#idx_collapse','U') IS NOT NULL DROP TABLE #idx_collapse; --SELECT * FROM #idx_collapse ORDER BY [object_id], index_id
-SELECT ic.[object_id], ic.index_id
-    ,  OrigKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.OrigKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-    ,  OrigInclColIDs = STRING_AGG(id.OrigInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-    ,  PhysKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.PhysKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-    ,  PhysInclColIDs = STRING_AGG(id.PhysInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-    --
-    ,  OrigKeyCols    = STRING_AGG(n.OrigKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
-    ,  OrigInclCols   = STRING_AGG(n.OrigInclColName                                            , ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
-    ,  PhysKeyCols    = STRING_AGG(n.PhysKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
-    ,  PhysInclCols   = STRING_AGG(n.PhysInclColName                                            , ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
-    /*  Only supports tables with up to 189 columns....after that you're gonna have to edit the query yourself, just follow the pattern.
-        Magic number '63' - bigint is 8 bytes (64 bits). The 64th bit is used for signing (+/-), so the highest bit we can use is the 63rd bit position.
-        Also, someone please explain to me why bitwise operators don't support binary/varbinary on both sides? */
-    ,  InclBitmap1    = CONVERT(bigint, SUM(IIF(id.PhysInclColID > 63*0 AND id.PhysInclColID <= 63*1, POWER(@2, id.PhysInclColID-1 - 63*0), 0))) --   0 < column_id <=  63
-    ,  InclBitmap2    = CONVERT(bigint, SUM(IIF(id.PhysInclColID > 63*1 AND id.PhysInclColID <= 63*2, POWER(@2, id.PhysInclColID-1 - 63*1), 0))) --  63 < column_id <= 126
-    ,  InclBitmap3    = CONVERT(bigint, SUM(IIF(id.PhysInclColID > 63*2 AND id.PhysInclColID <= 63*3, POWER(@2, id.PhysInclColID-1 - 63*2), 0))) -- 126 < column_id <= 189
-INTO #idx_collapse
-FROM #tmp_idx_cols ic
-    JOIN sys.columns c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
-    CROSS APPLY (
-        SELECT OrigKeyColID    = IIF(ic.is_included_column = 0 AND ic.is_secret_column = 0, ic.column_id, NULL)
-            ,  OrigInclColID   = IIF(ic.is_included_column = 1 AND ic.is_secret_column = 0, ic.column_id, NULL)
-            ,  PhysKeyColID    = IIF(ic.is_included_column = 0 AND ic.rn = 1              , ic.column_id, NULL)
-            ,  PhysInclColID   = IIF(ic.is_included_column = 1 AND ic.rn = 1              , ic.column_id, NULL)
-    ) id
-    CROSS APPLY (
-        SELECT OrigKeyColName  = IIF(id.OrigKeyColID  IS NOT NULL, ic.column_Name, NULL)
-            ,  OrigInclColName = IIF(id.OrigInclColID IS NOT NULL, ic.column_Name, NULL)
-            ,  PhysKeyColName  = IIF(id.PhysKeyColID  IS NOT NULL, ic.column_Name, NULL)
-            ,  PhysInclColName = IIF(id.PhysInclColID IS NOT NULL, ic.column_Name, NULL)
-    ) n
-GROUP BY ic.[object_id], ic.index_id;
-------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------
-IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT * FROM #tmp_idx
-SELECT ID = IDENTITY(int), i.[object_id], i.index_id
-    , SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]
-    , FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))
-    , ObjectType = o.[type_desc], IndexType = i.[type_desc], filter_definition = COALESCE(i.filter_definition, ''), i.is_unique
-    , ic.OrigKeyColIDs, OrigInclColIDs = COALESCE(ic.OrigInclColIDs, '')
-    , ic.PhysKeyColIDs, PhysInclColIDs = COALESCE(ic.PhysInclColIDs, '')
-    , ic.PhysKeyCols, ic.PhysInclCols, ic.OrigKeyCols, ic.OrigInclCols
-    , ic.InclBitmap1, ic.InclBitmap2, ic.InclBitmap3
-    , ObjectRowCount = CONVERT(bigint, OBJECTPROPERTYEX(i.[object_id], 'Cardinality')), IndexRowCount = ixs.row_count, ixs.used_kb, ixs.reserved_kb
-INTO #tmp_idx
-FROM sys.indexes i
-    JOIN sys.objects o ON o.[object_id] = i.[object_id]
-    JOIN #idx_collapse ic ON ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
-    JOIN (
-        SELECT ps.[object_id], ps.index_id
-            , row_count     = SUM(ps.row_count)
-            , used_kb       = SUM(ps.used_page_count)     * 8 -- KB
-            , reserved_kb   = SUM(ps.reserved_page_count) * 8 -- KB
-        FROM sys.dm_db_partition_stats ps
-        GROUP BY ps.[object_id], ps.index_id
-    ) ixs ON ixs.[object_id] = i.[object_id] AND ixs.index_id = i.index_id
-WHERE o.is_ms_shipped = 0 -- exclude system objects
-    AND i.is_disabled = 0 -- exclude disabled
-    AND i.is_hypothetical = 0;
+    IF OBJECT_ID('tempdb..#tmp_idx','U') IS NOT NULL DROP TABLE #tmp_idx; --SELECT * FROM #tmp_idx
+    SELECT ID = IDENTITY(int), i.[object_id], i.index_id
+        , SchemaName = SCHEMA_NAME(o.[schema_id]), ObjectName = o.[name], IndexName = i.[name]
+        , FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))
+        , ObjectType = o.[type_desc], IndexType = i.[type_desc], filter_definition = COALESCE(i.filter_definition, ''), i.is_unique
+        , ic.OrigKeyColIDs, OrigInclColIDs = COALESCE(ic.OrigInclColIDs, '')
+        , ic.PhysKeyColIDs, PhysInclColIDs = COALESCE(ic.PhysInclColIDs, '')
+        , ic.PhysKeyCols, ic.PhysInclCols, ic.OrigKeyCols, ic.OrigInclCols
+        , ic.InclBitmap1, ic.InclBitmap2, ic.InclBitmap3
+        , ObjectRowCount = CONVERT(bigint, OBJECTPROPERTYEX(i.[object_id], 'Cardinality')), IndexRowCount = ixs.row_count, ixs.used_kb, ixs.reserved_kb
+    INTO #tmp_idx
+    FROM sys.indexes i
+        JOIN sys.objects o ON o.[object_id] = i.[object_id]
+        JOIN #idx_collapse ic ON ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
+        JOIN (
+            SELECT ps.[object_id], ps.index_id
+                , row_count     = SUM(ps.row_count)
+                , used_kb       = SUM(ps.used_page_count)     * 8 -- KB
+                , reserved_kb   = SUM(ps.reserved_page_count) * 8 -- KB
+            FROM sys.dm_db_partition_stats ps
+            GROUP BY ps.[object_id], ps.index_id
+        ) ixs ON ixs.[object_id] = i.[object_id] AND ixs.index_id = i.index_id
+    WHERE o.is_ms_shipped = 0 -- exclude system objects
+        AND i.is_disabled = 0 -- exclude disabled
+        AND i.is_hypothetical = 0;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -261,8 +261,6 @@ WHERE o.is_ms_shipped = 0 -- exclude system objects
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-    DECLARE @Mergeable_ExtraColMax  tinyint = 4;
-
     -- Overlapping / Covered
     INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID)
     SELECT 3, 'Overlapping', x.ID, y.ID
@@ -282,6 +280,29 @@ WHERE o.is_ms_shipped = 0 -- exclude system objects
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+    /*  "Mergeable" potential is calculated by checking the difference in missing columns.
+
+        In order do do that, we use some bitwise tricks.
+        Explanation:
+        IndexA.InclBitmap1 - 0100101001
+        IndexB.InclBitmap1 - 0110111001
+        Differences:           *  *
+
+        Here you can see there are two additional includes in IndexB. In order to figure that out with bitwise operators
+        we can first negate the bitmap for IndexA...then we can use a bitwise AND comparison. This allows us to produce
+        a new binary value consisting only of the "different" bits.
+
+        So the comparison becomes:
+        IndexA.InclBitmap1 - 1011010110 (negated)
+        IndexB.InclBitmap1 - 0110111001
+        Bitwise AND:         0010010000 (provides a new bitmap which indicates which column bits are set for IndexB but not IndexA)
+
+        Fortunately, SQL Server provides a built in function for counting the number of 1's in a varbinary. So all we have
+        to do is use that function and we have our answer...there's 2 extra colums in IndexB than there are in IndexA. This
+        means there might be potential to merge the two indexes.
+    */
+    DECLARE @Mergeable_ExtraColMax  tinyint = 4;
+
     -- Mergeable
     INSERT INTO #matches (MatchRank, MatchType, SourceID, MatchID, ExtraColCount)
     SELECT 4, 'Mergeable', x.ID, y.ID, y.ExtraColCount
