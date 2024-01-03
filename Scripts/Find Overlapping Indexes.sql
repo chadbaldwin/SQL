@@ -412,7 +412,7 @@
     -- Covered
     SELECT 'Covered indexes';
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
-        , N'█' [██], mi.IndexType, mi.IndexName, mi.is_unique, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
+        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
         , N'█ Covers --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.PhysKeyColIDs, mf.PhysInclColIDs
     FROM #idx_cover o
         JOIN #idx mi ON mi.ID = o.MergeIntoID
