@@ -4,7 +4,7 @@
 /*
   All comparisons use the physical index structure and ignore include column ordinal positions.
 
-  ## Types of overlap
+  ## Match types
 
   - Duplicate - entire index is duplicated - key cols, key ordinal position, key sort direction, include column set
     - e.g. IndexA: (A,-B,C) Incl (D,F,E)
@@ -33,7 +33,7 @@
   The actual index structure would be created as:     KEY (B, C, A, F) INCLUDE (D, E)       -- A is promoted to key, F is added as a key
   If IndexB were instead a unique index, it would be: KEY (B, C)       INCLUDE (D, E, A, F) -- The key stays the same, but A and F are added as includes
 
-  Using the physical structure instead of the defined structure helps detect more duplicate and overlapping indexes and prevents false positives.
+  Using the physical structure instead of the defined structure helps detect more duplicate and covered indexes and prevents false positives.
 
   For example, a table has the following indexes defined:
   Unique Clustered: (A, B)
@@ -46,18 +46,12 @@
   IndexA: (B, C, A) INCLUDE (E, F) -- A is promoted to a key
   IndexB: (B, A)    INCLUDE (F)    -- A is promoted to a key
 
-  Even though their defined structure appears to be overlapping, their physical structure is not.
+  Even though their defined structure appears to be covered, their physical structure is not.
 */
 
 /*  Considerations:
   - Improve ability to compare the entire index definition. Currently, only keys and includes are compared.
     However, things like...padding, fillfactor and other settings are ignored.
-
-  - Add detection where indexes are essentially a duplicate where some include columns from one index are keys in the other.
-    Not sure what type of overlap to label this as. Techincally you could argue any one of the 3 types. These are currently
-    getting flagged as "mergeable". But that's not really accurate.
-      - e.g. IndexA (A,-B,C) Incl (D,F,E)   ---   IndexB: (A,-B) Incl (C,D,F,E) -- the indexes are functionally the same, C is just a key in IndexA instead of an include
-    As for how to solve this...I think one way would be to join all indexes where IndexB.Keys LIKE IndexA.Keys+'%'
 */
 ------------------------------------------------------------------------------
 
@@ -299,11 +293,11 @@
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
--- Overlapping / Covered
+-- Covered
 ------------------------------------------------------------------------------
-    IF OBJECT_ID('tempdb..#idx_overlap','U') IS NOT NULL DROP TABLE #idx_overlap; --SELECT * FROM #idx_overlap
+    IF OBJECT_ID('tempdb..#idx_cover','U') IS NOT NULL DROP TABLE #idx_cover; --SELECT * FROM #idx_cover
     SELECT MergeIntoID = x.ID, MergeFromID = y.ID
-    INTO #idx_overlap
+    INTO #idx_cover
     FROM #idx x
         CROSS APPLY (
             SELECT i.ID
@@ -327,7 +321,7 @@
                         AND i.AllColBitmap3 & x.AllColBitmap3 = i.AllColBitmap3 -- /
                         AND (x.PhysKeyColIDs <> i.PhysKeyColIDs OR x.AllColIDs <> i.AllColIDs) -- Keys or includes - at least one must be different
                     )
-                    OR x.IndexType = 'CLUSTERED' -- If the left is a clustered index, then we only care if the keys overlap/match
+                    OR x.IndexType = 'CLUSTERED' -- If the left is a clustered index, then we only care if the keys are covered or match
                 )
         ) y;
 ------------------------------------------------------------------------------
@@ -415,12 +409,12 @@
         JOIN #idx i ON i.ID = id.ID
     ORDER BY i.ObjectName, id.DupeGroupID, i.IndexType, i.is_unique DESC;
 
-    -- Overlapping
-    SELECT 'Overlapping indexes';
+    -- Covered
+    SELECT 'Covered indexes';
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
         , N'█' [██], mi.IndexType, mi.IndexName, mi.is_unique, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
-        , N'█ Overlaps --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.PhysKeyColIDs, mf.PhysInclColIDs
-    FROM #idx_overlap o
+        , N'█ Covers --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.PhysKeyColIDs, mf.PhysInclColIDs
+    FROM #idx_cover o
         JOIN #idx mi ON mi.ID = o.MergeIntoID
         JOIN #idx mf ON mf.ID = o.MergeFromID
     ORDER BY mi.SchemaName, mi.ObjectName, mi.filter_definition, mi.IndexName, mf.IndexName;
