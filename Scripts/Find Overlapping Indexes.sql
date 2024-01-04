@@ -100,6 +100,7 @@
     --SELECT *
     FROM #target_indexes i
         CROSS APPLY (
+            /* Split by " AND ", sort it alphabetically, then cram it back together with " AND " */
             SELECT NewFilterDef = CONCAT(N'(', STRING_AGG(x.[value], N' AND ') WITHIN GROUP (ORDER BY x.[value]), N')')
             FROM STRING_SPLIT(REPLACE(SUBSTRING(i.filter_definition, 2, LEN(i.filter_definition) - 2), N' AND ', NCHAR(9999)), NCHAR(9999)) x
             WHERE i.filter_definition IS NOT NULL
@@ -283,8 +284,8 @@
     SELECT x.DupeGroupID, x.DupeGroupCount, x.ID
     INTO #idx_dupes
     FROM (
-        SELECT DupeGroupID    = MIN(x.ID)    OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
-            ,  DupeGroupCount = COUNT(*)     OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
+        SELECT DupeGroupID    = MIN(x.ID) OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
+            ,  DupeGroupCount = COUNT(*)  OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
             , x.ID
         FROM #idx x
         WHERE x.IndexType = 'NONCLUSTERED' -- Non-clustered indexes only. "Duplicates" involved clustered indexes will be classified as other match types.
@@ -349,13 +350,13 @@
         So the comparison becomes:
         IndexA.AllColBitmap1 - 1011010110 (original value negated)
         IndexB.AllColBitmap1 - 0110111001
-        Bitwise AND:         0010010000 (provides a new bitmap which indicates which column bits are set for IndexB but not IndexA)
+        Bitwise AND:           0010010000 (provides a new bitmap which indicates which column bits are set for IndexB but not IndexA)
 
         Fortunately, SQL Server provides a built in function for counting the number of 1's in a varbinary. So all we have
         to do is use that function and we have our answer...there's 2 extra colums in IndexB than there are in IndexA. This
         means there might be potential to merge the two indexes.
     */
-    DECLARE @Mergeable_ExtraColMax  tinyint = 4;
+    DECLARE @Mergeable_ExtraColMax  tinyint = 3;
 
     -- Mergeable
     IF OBJECT_ID('tempdb..#idx_merge','U') IS NOT NULL DROP TABLE #idx_merge; --SELECT * FROM #idx_merge
@@ -383,6 +384,7 @@
                     have the same keys. Non-unique indexes can be merged into a unique index, but not the other way around.
                     If both indexes are non-unique, then the left keys must be covering the right index keys. */
                 AND ((x.is_unique = 1 AND x.PhysKeyColIDs = i.PhysKeyColIDs) OR (x.is_unique = 0 AND i.is_unique = 0 AND x.PhysKeyColIDs LIKE i.PhysKeyColIDs + '%'))
+                AND ((x.PhysKeyColIDs = i.PhysKeyColIDs AND x.PhysInclColIDs <> '') OR x.PhysKeyColIDs <> i.PhysKeyColIDs) /* Prevent some covering indexe matches from popping up */
                 --
                 AND (c.ExtraColCount >= 1 AND c.ExtraColCount <= @Mergeable_ExtraColMax) /*  Includes are off by small number */
         ) y;
@@ -412,8 +414,8 @@
     -- Covered
     SELECT 'Covered indexes';
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
-        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
-        , N'█ Covers --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.PhysKeyColIDs, mf.PhysInclColIDs
+        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
+        , N'█ Covers --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint, mf.PhysKeyColIDs, mf.PhysInclColIDs, NULL
     FROM #idx_cover o
         JOIN #idx mi ON mi.ID = o.MergeIntoID
         JOIN #idx mf ON mf.ID = o.MergeFromID
@@ -422,8 +424,8 @@
     -- Mergeable
     SELECT 'Mergeable indexes';
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
-        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
-        , N'█ Can merge with -> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.PhysKeyColIDs, mf.PhysInclColIDs, m.ExtraColCount
+        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
+        , N'█ Can merge with --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint, mf.PhysKeyColIDs, mf.PhysInclColIDs, m.ExtraColCount
     FROM #idx_merge m
         JOIN #idx mi ON mi.ID = m.MergeIntoID
         JOIN #idx mf ON mf.ID = m.MergeFromID
