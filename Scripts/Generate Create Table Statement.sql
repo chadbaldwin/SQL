@@ -28,7 +28,6 @@ SELECT @output = (
 			, x.ColType																	-- Data type of column
 			, REPLICATE(CHAR(9), CEILING((x.MaxTypeNameLen - LEN(x.ColType)) / 4.0))	-- Add tabs after data type so that NULL/NOT NULL lines up
 			, IIF(x.is_nullable = 1, CHAR(9) + 'NULL', 'NOT NULL')						-- Add an extra tab to align 'NULL'
-			, IIF(x.is_identity_column = 1, ' IDENTITY', NULL)							-- Add identity setting
 			, ',{{br}}')
 	FROM (
 		SELECT y.ColName, ColType = dt.TypeName, ColOrder = x.column_ordinal, x.is_nullable, x.is_identity_column
