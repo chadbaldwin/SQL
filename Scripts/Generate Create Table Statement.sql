@@ -31,7 +31,7 @@ SELECT @output = (
 			, IIF(x.is_identity_column = 1, ' IDENTITY', NULL)							-- Add identity setting
 			, ',{{br}}')
 	FROM (
-		SELECT y.ColName, ColType = x.system_type_name, ColOrder = x.column_ordinal, x.is_nullable, x.is_identity_column
+		SELECT y.ColName, ColType = dt.TypeName, ColOrder = x.column_ordinal, x.is_nullable, x.is_identity_column
 			, MaxColNameLen = MAX(LEN(y.ColName)) OVER () + (4-(MAX(LEN(y.ColName)) OVER () % 4))
 			, MaxTypeNameLen = MAX(LEN(x.system_type_name)) OVER () + (4-(MAX(LEN(x.system_type_name)) OVER () % 4))
 		FROM sys.dm_exec_describe_first_result_set(@sql, NULL, 1) x
