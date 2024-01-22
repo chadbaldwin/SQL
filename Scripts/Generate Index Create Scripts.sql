@@ -43,7 +43,8 @@ SELECT DatabaseName       = DB_NAME()
     , ObjectTypeCode      = o.[type] COLLATE DATABASE_DEFAULT
     , IndexType           = i.[type_desc] COLLATE DATABASE_DEFAULT
     , IsUnique            = i.is_unique
--- data_space_id
+    , FGName              = fg.[name]
+    , FGIsDefault         = fg.is_default
     , IgnoreDupKey        = i.[ignore_dup_key]
     , IsPrimaryKey        = i.is_primary_key
     , IsUniqueConstraint  = i.is_unique_constraint
@@ -60,8 +61,6 @@ SELECT DatabaseName       = DB_NAME()
     , StatNoRecompute     = st.no_recompute
     , StatIsIncremental   = st.is_incremental
     , DataCompressionType = p.[data_compression_desc] COLLATE DATABASE_DEFAULT
-    , IndexFGName         = fg.[name]
-    , IndexFGIsDefault    = fg.is_default
     , kc.KeyColsN, kc.KeyColsNQO, kc.InclColsNQ
 INTO #tmp_indexes
 FROM sys.indexes i
@@ -72,13 +71,13 @@ FROM sys.indexes i
     LEFT HASH JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id
     JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     CROSS APPLY (
-        SELECT KeyColsN      = STRING_AGG(IIF(ic.is_included_column = 0, n.ColName          , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColName)
-            ,  KeyColsNQO    = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNameQuoteOrder, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColName)
-            ,  InclColsNQ    = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNameQuote     , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColName)
+        SELECT KeyColsN        = STRING_AGG(IIF(ic.is_included_column = 0                          , n.ColN  , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+            ,  KeyColsNQO      = STRING_AGG(IIF(ic.is_included_column = 0                          , t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+            ,  InclColsNQ      = STRING_AGG(IIF(ic.is_included_column = 1                          , q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
         FROM sys.index_columns ic
-            CROSS APPLY (SELECT ColName = COL_NAME(ic.[object_id], ic.column_id)) n
-            CROSS APPLY (SELECT ColNameQuote = QUOTENAME(n.ColName)) q
-            CROSS APPLY (SELECT ColNameQuoteOrder = CONCAT_WS(' ', q.ColNameQuote, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
+            CROSS APPLY (SELECT ColN    = COL_NAME(ic.[object_id], ic.column_id)) n
+            CROSS APPLY (SELECT ColNQ   = QUOTENAME(n.ColN)) q
+            CROSS APPLY (SELECT ColNQO  = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
 WHERE i.[type] > 0 -- Exclude index heap records (just the index, not the object, we still want NONCLUSTERED indexes on heaps)
@@ -100,7 +99,7 @@ SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
 	, i.ObjectType, i.ObjectTypeCode, i.IndexType
 	, i.IsUnique, i.IgnoreDupKey, i.IsPrimaryKey, i.IsUniqueConstraint, i.[FillFactor], i.IsPadded, i.IsDisabled, i.AllowRowLocks, i.AllowPageLocks, i.HasFilter, i.FilterDefinition
 	, i.StatNoRecompute, i.StatIsIncremental, i.DataCompressionType
-	, i.IndexFGName, i.IndexFGIsDefault
+    , i.FGName, i.FGIsDefault
     , KeyCols              = REPLACE(i.KeyColsNQO, @d, ', ')
     , InclCols             = REPLACE(i.InclColsNQ, @d, ', ')
     , SuggestedName        = c.SuggestedName
@@ -118,7 +117,7 @@ FROM #tmp_indexes i
             ,  SchemaName    = QUOTENAME(i.SchemaName)
             ,  ObjectName    = QUOTENAME(i.ObjectName)
             ,  IndexName     = QUOTENAME(i.IndexName)
-            ,  IndexFGName   = QUOTENAME(i.IndexFGName)
+            ,  FGName       = QUOTENAME(i.FGName)
     ) q
     -- Create the base scripts for each section
     CROSS APPLY (
@@ -169,7 +168,7 @@ FROM #tmp_indexes i
             ,  InclCols         = 'INCLUDE ('+REPLACE(i.InclColsNQ, @d, ', ')+')'                           -- INCLUDE ([ColA], [ColB], [ColC])
             ,  FilterDefinition = 'WHERE '+i.FilterDefinition                                               -- WHERE ([ColA] = 123)
             ,  Options          = 'WITH ('+NULLIF(CONCAT_WS(', ', o.CreateOptions, o.BuildOptions), '')+')' -- WITH (PAD_INDEX=ON, FILLFACTOR=85, ONLINE=ON)
-            ,  FG               = 'ON '+IIF(i.IndexFGIsDefault = 0, QUOTENAME(i.IndexFGName), NULL)         -- ON [Secondary]
+            ,  FG               = 'ON '+IIF(i.FGIsDefault = 0, QUOTENAME(i.FGName), NULL)                   -- ON [Secondary]
             -- Other
             ,  RebuildOptions   = 'WITH ('+o.BuildOptions+')'
             ,  SuggestedName    = LEFT(CONCAT_WS('_', x.ConstraintTypeCode, i.ObjectName, REPLACE(i.KeyColsN, @d, '_')), 128)
