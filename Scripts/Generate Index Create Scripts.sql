@@ -10,6 +10,8 @@
     * For Rebuild script, add option to check if disabled first? Or separate as an "EnableScript"
 */
 ------------------------------------------------------------------------------
+GO
+------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 -- Options
@@ -18,17 +20,17 @@ DECLARE @ScriptExistsCheck bit     = 1,
         @BatchSeparator    bit     = 1,
         @FormatSQL         bit     = 1,
         @TrailingLineBreak bit     = 1,
-        @AddOutputMessages bit     = 1,
+        @AddOutputMessages  bit     = 0,
         @MAXDOP            tinyint = 0; -- 0 = Default
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 -- Other
-DECLARE @crlf nchar(2) = NCHAR(13)+NCHAR(10),
-        @tab  nchar(1) = NCHAR(9),
+DECLARE @rn nchar(2) = NCHAR(13)+NCHAR(10), -- CRLF - \r\n
+        @t  nchar(1) = NCHAR(9),            -- tab - \t
         @d    nchar(1) = NCHAR(9999), -- Delimeter to use for separating values in templates
         @q    nchar(1) = '''',        -- Single quote
-        @qq   nchar(1) = '''''';      -- Double single quote
+        @qq nchar(2) = '''''';              -- Double single quote
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -39,8 +41,9 @@ SELECT DatabaseName       = DB_NAME()
     , SchemaName          = SCHEMA_NAME(o.[schema_id])
     , ObjectName          = o.[name]
     , IndexName           = i.[name]
-    , ObjectType          = o.[type_desc]
-    , ObjectTypeCode      = o.[type] COLLATE DATABASE_DEFAULT
+    , FQIN                = x.FQIN
+    , ObjectTypeCode      = RTRIM(o.[type]) COLLATE DATABASE_DEFAULT
+    , ObjectType          = o.[type_desc] COLLATE DATABASE_DEFAULT
     , IndexType           = i.[type_desc] COLLATE DATABASE_DEFAULT
     , IsUnique            = i.is_unique
     , FGName              = fg.[name]
@@ -51,13 +54,10 @@ SELECT DatabaseName       = DB_NAME()
     , [FillFactor]        = i.fill_factor
     , IsPadded            = i.is_padded
     , IsDisabled          = i.is_disabled
--- is_ignored_in_optimization
     , AllowRowLocks       = i.[allow_row_locks]
     , AllowPageLocks      = i.[allow_page_locks]
     , HasFilter           = i.has_filter
     , FilterDefinition    = i.filter_definition
--- compression_delay
--- suppress_dup_key_messages
     , StatNoRecompute     = st.no_recompute
     , StatIsIncremental   = st.is_incremental
     , DataCompressionType = p.[data_compression_desc] COLLATE DATABASE_DEFAULT
@@ -80,6 +80,7 @@ FROM sys.indexes i
             CROSS APPLY (SELECT ColNQO  = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
+    CROSS APPLY (SELECT FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))) x
 WHERE i.[type] > 0 -- Exclude index heap records (just the index, not the object, we still want NONCLUSTERED indexes on heaps)
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND o.is_ms_shipped = 0
@@ -104,7 +105,7 @@ SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
     , InclCols             = REPLACE(i.InclColsNQ, @d, ', ')
     , SuggestedName        = c.SuggestedName
     , MatchesSuggestedName = CONVERT(bit, IIF(i.IndexName = c.SuggestedName, 1, 0))
-    , FQIN                 = CONCAT_WS('.', q.DatabaseName, q.SchemaName, q.ObjectName, q.IndexName)
+    , FQIN                 = i.FQIN
     , CreateOn             = IIF(x.IsConstraint = 1, c.AlterTable+' '+c.AddConstraint, c.CreateBase+' '+c.OnObject)
     , CreateScript         = CONCAT_WS(@d, IIF(x.IsConstraint = 1, c.AlterTable+@d+c.AddConstraint, c.CreateBase+@d+c.OnObject)+' '+c.KeyCols, c.InclCols, c.FilterDefinition, c.Options, c.FG)+';'
     , DropScript           = IIF(x.IsConstraint = 1, s.DropPKUQScript, s.DropScript)
@@ -179,7 +180,7 @@ FROM #tmp_indexes i
 IF (@FormatSQL = 1)
 BEGIN;
     UPDATE o
-    SET o.CreateScript = REPLACE(o.CreateScript, @d, @crlf + @tab)
+    SET o.CreateScript = REPLACE(o.CreateScript, @d, @rn + @t)
     FROM #output o;
 END;
 ELSE
@@ -195,10 +196,10 @@ IF (@AddOutputMessages = 1)
 BEGIN;
     DECLARE @SqlOutputMessage nvarchar(4000) = 'RAISERROR(''Execute: {{Message}}'',0,1) WITH NOWAIT;';
     UPDATE o
-    SET o.CreateScript    = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.CreateOn     , @q, @qq)) + @crlf + o.CreateScript,
-        o.DropScript      = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DropScript   , @q, @qq)) + @crlf + o.DropScript,
-        o.RebuildScript   = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.RebuildScript, @q, @qq)) + @crlf + o.RebuildScript,
-        o.DisableScript   = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DisableScript, @q, @qq)) + @crlf + o.DisableScript
+    SET o.CreateScript    = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.CreateOn     , @q, @qq)) + @rn + o.CreateScript,
+        o.DropScript      = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DropScript   , @q, @qq)) + @rn + o.DropScript,
+        o.RebuildScript   = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.RebuildScript, @q, @qq)) + @rn + o.RebuildScript,
+        o.DisableScript   = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DisableScript, @q, @qq)) + @rn + o.DisableScript
     FROM #Output o;
 END;
 ------------------------------------------------------------------------------
@@ -206,21 +207,22 @@ END;
 ------------------------------------------------------------------------------
 IF (@ScriptExistsCheck = 1)
 BEGIN;
-    DECLARE @SqlIfNotExists nvarchar(4000) = 'IF ((OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL)' + @crlf
-                                            + @tab + 'AND (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL))' + @crlf
-                                            + 'BEGIN;' + @crlf
-                                            + @tab + '{{Script}}' + @crlf
+    DECLARE @SqlIfNotExists nvarchar(4000) = 'IF (OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL' + @rn
+                                            + @t + 'AND INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL' + @rn
+                                            + ')' + @rn
+                                            + 'BEGIN;' + @rn
+                                            + @t + '{{Script}}' + @rn
                                             + 'END;',
-            @SqlIfExists    nvarchar(4000) = 'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)' + @crlf
-                                            + 'BEGIN;' + @crlf
-                                            + @tab + '{{Script}}' + @crlf
+            @SqlIfExists    nvarchar(4000) = 'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)' + @rn
+                                            + 'BEGIN;' + @rn
+                                            + @t + '{{Script}}' + @rn
                                             + 'END;';
 
     UPDATE o
-    SET o.CreateScript  = REPLACE(x.IfNotExists, '{{Script}}', REPLACE(o.CreateScript , @crlf, @crlf + @tab)),
-        o.DropScript    = REPLACE(x.IfExists   , '{{Script}}', REPLACE(o.DropScript   , @crlf, @crlf + @tab)),
-        o.RebuildScript = REPLACE(x.IfExists   , '{{Script}}', REPLACE(o.RebuildScript, @crlf, @crlf + @tab)),
-        o.DisableScript = REPLACE(x.IfExists   , '{{Script}}', REPLACE(o.DisableScript, @crlf, @crlf + @tab))
+    SET o.CreateScript  = REPLACE(x.IfNotExists, '{{Script}}', REPLACE(o.CreateScript , @rn, @rn + @t)),
+        o.DropScript    = REPLACE(x.IfExists   , '{{Script}}', REPLACE(o.DropScript   , @rn, @rn + @t)),
+        o.RebuildScript = REPLACE(x.IfExists   , '{{Script}}', REPLACE(o.RebuildScript, @rn, @rn + @t)),
+        o.DisableScript = REPLACE(x.IfExists   , '{{Script}}', REPLACE(o.DisableScript, @rn, @rn + @t))
     FROM #output o
         CROSS APPLY (SELECT SchemaName = QUOTENAME(o.SchemaName), ObjectName = QUOTENAME(o.ObjectName)) q
         CROSS APPLY (
@@ -240,7 +242,7 @@ BEGIN;
         o.DisableScript = o.DisableScript + x.Sep
     FROM #output o
         CROSS APPLY (
-            SELECT Sep = CONCAT(IIF(@BatchSeparator = 1, @crlf + 'GO', NULL), IIF(@TrailingLineBreak = 1, @crlf + @crlf, NULL))
+            SELECT Sep = CONCAT(IIF(@BatchSeparator = 1, @rn + 'GO', NULL), IIF(@TrailingLineBreak = 1, @rn + @rn, NULL))
         ) x;
 END;
 ------------------------------------------------------------------------------
