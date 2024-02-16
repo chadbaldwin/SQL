@@ -512,7 +512,7 @@
                    , mf.PhysKeyColIDs, mf.PhysInclColIDs
         --         , mf.OrigKeyColIDs, mf.OrigInclColIDs
         --         , mf.FQIN
-        , N'█' [██], [ExtraCols - {col_id}column_name datatype, ...] = ec.ExtraCols
+        , N'█' [██], [ExtraCols - {col_id}[column_name]] datatype] = ec.ExtraCols
     FROM #idx_cover o
         JOIN #idx mi ON mi.IndexID = o.MergeIntoID
         JOIN #idx mf ON mf.IndexID = o.MergeFromID
