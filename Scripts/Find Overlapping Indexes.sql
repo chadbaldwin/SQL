@@ -59,7 +59,7 @@
     /*  Create a list of indexes that qualify for analysis */
 
     IF OBJECT_ID('tempdb..#target_indexes','U') IS NOT NULL DROP TABLE #target_indexes; --SELECT * FROM #target_indexes;
-    SELECT ID = IDENTITY(int), i.[object_id], i.index_id
+    SELECT IndexID = IDENTITY(int), i.[object_id], i.index_id
          , n.SchemaName, n.ObjectName, n.IndexName, x.FQIN
          , ObjectType  = o.[type_desc]
          , IndexType   = i.[type_desc]
@@ -75,7 +75,7 @@
     WHERE o.is_ms_shipped = 0
         AND i.is_disabled = 0
         AND i.is_hypothetical = 0
-        AND i.[type] IN (1,2) -- This script only supporst simple rowstore clustered and non-clustered indexes
+        AND i.[type] IN (1,2); -- This script only supports simple rowstore clustered and non-clustered indexes
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -110,6 +110,7 @@
 ------------------------------------------------------------------------------
     IF OBJECT_ID('tempdb..#idx_cols','U') IS NOT NULL DROP TABLE #idx_cols; --SELECT * FROM #idx_cols ORDER BY object_id, index_id, is_included_column, key_ordinal, column_id
     CREATE TABLE #idx_cols (
+        IndexID             int            NOT NULL,
         [object_id]         int            NOT NULL,
         index_id            int            NOT NULL,
         column_id           int            NOT NULL,
@@ -127,20 +128,20 @@
         rn                  int            NOT NULL DEFAULT(0),
     );
 
-    INSERT INTO #idx_cols ([object_id], index_id, column_id, column_name, key_ordinal, is_descending_key, is_included_column, is_secret_column, is_clustering_key, data_type, max_length, [precision], scale, data_type_text)
-    SELECT x.[object_id], x.index_id, x.column_id
+    INSERT INTO #idx_cols (IndexID, [object_id], index_id, column_id, column_name, key_ordinal, is_descending_key, is_included_column, is_secret_column, is_clustering_key, data_type, max_length, [precision], scale, data_type_text)
+    SELECT x.IndexID, x.[object_id], x.index_id, x.column_id
         , COL_NAME(x.[object_id], x.column_id)
         , x.key_ordinal, x.is_descending_key, x.is_included_column, x.is_secret_column, x.is_clustering_key
         , TYPE_NAME(c.system_type_id), c.max_length, c.[precision], c.scale
         , dt.TypeName
     FROM (
         /* Default records */
-        SELECT i.[object_id], i.index_id, ic.column_id, ic.key_ordinal, ic.is_descending_key, ic.is_included_column, is_secret_column = 0, is_clustering_key = IIF(i.IndexTypeID = 1, 1, 0)
+        SELECT i.IndexID, i.[object_id], i.index_id, ic.column_id, ic.key_ordinal, ic.is_descending_key, ic.is_included_column, is_secret_column = 0, is_clustering_key = IIF(i.IndexTypeID = 1, 1, 0)
     FROM #target_indexes i
             JOIN sys.index_columns ic ON ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
         UNION ALL
     /* Add missing clustering keys - can be either keys or includes depending on is_unique status */
-        SELECT i.[object_id], i.index_id, ic.column_id
+        SELECT i.IndexID, i.[object_id], i.index_id, ic.column_id
         , key_ordinal = IIF(i.is_unique = 0, ic.key_ordinal + 1000000, 0) /*  Just a hack to ensure the secret columns are always sorted to the end while also maintaining their clustered index ordinal position */
         , ic.is_descending_key
         , is_included_column = i.is_unique /*  This just happens to line up, if a non-clustered index is unique, then missing clustered index columns are added as includes instead */
@@ -149,6 +150,18 @@
     FROM #target_indexes i
         JOIN sys.index_columns ic ON ic.[object_id] = i.[object_id] AND ic.index_id = 1 -- clustered
         WHERE i.IndexType = 'NONCLUSTERED'
+        UNION ALL
+        /* Add missing clustered index "include" columns - This way we treat clustered indexes the same as non-clustered as having keys and includes */
+        SELECT i.IndexID, i.[object_id], i.index_id, c.column_id, key_ordinal = 0, is_descending_key = 0, is_included_column = 1, is_secret_column = 0, is_clustering_key = 0
+        FROM #target_indexes i
+            JOIN sys.columns c ON c.[object_id] = i.[object_id]
+        WHERE i.IndexType = 'CLUSTERED'
+            AND NOT EXISTS (
+                SELECT *
+                FROM sys.index_columns ic
+                WHERE ic.[object_id] = c.[object_id] AND ic.index_id = i.IndexID 
+                    AND ic.column_id = c.column_id
+            )
     ) x
         JOIN sys.columns c ON c.[object_id] = x.[object_id] AND c.column_id = x.column_id
         CROSS APPLY (
@@ -186,6 +199,11 @@
         FROM #idx_cols c
     ) c
     WHERE c.rn = 0;
+
+    /* -- How to read the data in #idx_cols:
+        SELECT * FROM #idx_cols WHERE is_secret_column = 0 -- Definitional index structure
+        SELECT * FROM #idx_cols WHERE rn = 1               -- Physical index structure
+    */
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -236,7 +254,7 @@
         SELECT ti.[object_id]
             /*  Clustering keys */
             ,  ClstKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.ClstKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-            ,  ClstKeyCols    = STRING_AGG(n.ClstKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+            ,  ClstKeyCols    = STRING_AGG(CONVERT(nvarchar(MAX), n.ClstKeyColName + IIF(ic.is_descending_key = 1, ' DESC', '')), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
         FROM #target_indexes ti
             JOIN #idx_cols ic ON ic.[object_id] = ti.[object_id] AND ic.index_id = ti.index_id
             CROSS APPLY (SELECT column_id = CONCAT(IIF(ic.is_clustering_key = 1, 'c', NULL), ic.column_id)) ci
@@ -249,13 +267,13 @@
             /*  Defined index structure */
             ,  OrigKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.OrigKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
             ,  OrigInclColIDs = STRING_AGG(id.OrigInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-            ,  OrigKeyCols    = STRING_AGG(n.OrigKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
-            ,  OrigInclCols   = STRING_AGG(n.OrigInclColName + ' ' + ic.data_type_text                  , ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+            ,  OrigKeyCols    = STRING_AGG(CONVERT(nvarchar(MAX), n.OrigKeyColName + IIF(ic.is_descending_key = 1, ' DESC', '')), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+            ,  OrigInclCols   = STRING_AGG(CONVERT(nvarchar(MAX), n.OrigInclColName + ' ' + ic.data_type_text                  ), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
             /*  Physical index structure */
             ,  PhysKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.PhysKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
             ,  PhysInclColIDs = STRING_AGG(id.PhysInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-            ,  PhysKeyCols    = STRING_AGG(n.PhysKeyColName + IIF(ic.is_descending_key = 1, ' DESC', ''), ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
-            ,  PhysInclCols   = STRING_AGG(n.PhysInclColName + ' ' + ic.data_type_text                  , ', ' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+            ,  PhysKeyCols    = STRING_AGG(CONVERT(nvarchar(MAX), n.PhysKeyColName + IIF(ic.is_descending_key = 1, ' DESC', '')), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
+            ,  PhysInclCols   = STRING_AGG(CONVERT(nvarchar(MAX), n.PhysInclColName + ' ' + ic.data_type_text                  ), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
         --INTO #idx_collapse
         FROM #idx_cols ic
             CROSS APPLY (SELECT column_id = CONCAT(IIF(ic.is_clustering_key = 1, 'c', NULL), ic.column_id)) ci
@@ -286,7 +304,7 @@
 
 ------------------------------------------------------------------------------
     IF OBJECT_ID('tempdb..#idx','U') IS NOT NULL DROP TABLE #idx; --SELECT * FROM #idx WHERE PhysKeyColIDs LIKE '%-%'
-    SELECT i.ID, i.[object_id], i.index_id
+    SELECT i.IndexID, i.[object_id], i.index_id
         , i.SchemaName, i.ObjectName, i.IndexName, i.ObjectType, i.IndexType, i.IndexTypeID, i.is_unique, i.is_primary_key, i.is_unique_constraint, i.has_filter, i.filter_definition
         , ic.PhysKeyColIDs, PhysInclColIDs = COALESCE(ic.PhysInclColIDs, '')
         , ic.OrigKeyColIDs, OrigInclColIDs = COALESCE(ic.OrigInclColIDs, '')
@@ -319,7 +337,7 @@
 -- Duplicates
 ------------------------------------------------------------------------------
     /*  Duplicates don't really have a parent/child type of match relationship. So rather than comparing them side by side
-        as a pair of matches, we just insert them into a table to be compared veritcally with a grouping ID.
+        as a pair of matches, we just insert them into a table to be compared veritcally with a grouping IndexID.
 
         The only time there's really a parent/child sort of relationship is when unique indexes are involved because you
         would likely prefer to drop the non-unique index when it duplicates a unique index.
@@ -330,12 +348,12 @@
         The entire structure of the index must match in regard to key cols, key ordinal, key sort direction and include column list.
     */
     IF OBJECT_ID('tempdb..#idx_dupes','U') IS NOT NULL DROP TABLE #idx_dupes; --SELECT * FROM #idx_dupes
-    SELECT x.DupeGroupID, x.DupeGroupCount, x.ID
+    SELECT x.DupeGroupID, x.DupeGroupCount, x.IndexID
     INTO #idx_dupes
     FROM (
-        SELECT DupeGroupID    = MIN(x.ID) OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
+        SELECT DupeGroupID    = MIN(x.IndexID) OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
             ,  DupeGroupCount = COUNT(*)  OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
-            , x.ID
+            , x.IndexID
         FROM #idx x
         WHERE x.IndexType = 'NONCLUSTERED' -- Non-clustered indexes only. "Duplicates" involving clustered indexes will be classified as other match types (likely as covering indexes).
     ) x
@@ -346,11 +364,11 @@
 -- Covered
 ------------------------------------------------------------------------------
     IF OBJECT_ID('tempdb..#idx_cover','U') IS NOT NULL DROP TABLE #idx_cover; --SELECT * FROM #idx_cover
-    SELECT MergeIntoID = x.ID, MergeFromID = y.ID
+    SELECT MatchID = IDENTITY(int), MergeIntoID = x.IndexID, MergeFromID = y.IndexID
     INTO #idx_cover
     FROM #idx x
         CROSS APPLY (
-            SELECT i.ID
+            SELECT i.IndexID
             FROM #idx i
             WHERE 1=1
                 /* Minimum match criteria */
@@ -373,6 +391,25 @@
                     OR x.IndexType = 'CLUSTERED' -- If the left is a clustered index, then we only care if the keys are covered or match
                 )
         ) y;
+
+    /* Get full list of column texts for extra columns */
+    IF OBJECT_ID('tempdb..#idx_cover_extra_cols','U') IS NOT NULL DROP TABLE #idx_cover_extra_cols; --SELECT * FROM #idx_cover_extra_cols
+    WITH cte_cols AS (SELECT * FROM #idx_cols c WHERE rn = 1)
+    SELECT ic.MatchID
+        , ExtraCols = STRING_AGG(x.ColText, ', ') WITHIN GROUP (ORDER BY ci.is_included_column, ci.key_ordinal)
+    INTO #idx_cover_extra_cols
+    FROM #idx_cover ic
+        JOIN cte_cols ci ON ci.IndexID = ic.MergeIntoID
+        CROSS APPLY (
+            SELECT ColText = CONCAT('{', ci.column_id, '}', QUOTENAME(ci.column_name), ' ', ci.data_type_text, IIF(ci.is_descending_key = 1, ' DESC', ''))
+        ) x
+    WHERE NOT EXISTS (
+            SELECT *
+            FROM cte_cols cf
+            WHERE cf.IndexID = ic.MergeFromID
+                AND cf.column_id = ci.column_id
+        )
+    GROUP BY ic.MatchID;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -408,11 +445,11 @@
 
     -- Mergeable
     IF OBJECT_ID('tempdb..#idx_merge','U') IS NOT NULL DROP TABLE #idx_merge; --SELECT * FROM #idx_merge
-    SELECT MergeIntoID = x.ID, MergeFromID = y.ID, y.ExtraColCount
+    SELECT MergeIntoID = x.IndexID, MergeFromID = y.IndexID, y.ExtraColCount
     INTO #idx_merge
     FROM #idx x
         CROSS APPLY (
-            SELECT i.ID, c.ExtraColCount
+            SELECT i.IndexID, c.ExtraColCount
             FROM #idx i
                 CROSS APPLY (
                     SELECT ExtraColCount = sys.fn_numberOf1InVarBinary(~x.AllColBitmap1 & i.AllColBitmap1)
@@ -460,39 +497,40 @@
         , N'█' [██], i.ClstKeyColIDs
         , N'█' [██], ti.data_space_id, ti.[ignore_dup_key], ti.fill_factor, ti.is_padded, ti.[allow_row_locks], ti.[allow_page_locks], ti.has_filter, ti.filter_definition, ti.auto_created
     FROM #idx_dupes id
-        JOIN #idx i ON i.ID = id.ID
-        JOIN #target_indexes ti ON ti.ID = i.ID
+        JOIN #idx i ON i.IndexID = id.IndexID
+        JOIN #target_indexes ti ON ti.IndexID = i.IndexID
     ORDER BY i.ObjectName, id.DupeGroupID, i.IndexType, i.is_unique DESC;
 
     -- Covered
     SELECT 'Covered indexes';
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
-        , N'█' [██], mi.ID, mi.index_id, mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint
-                   , mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
-        --         , mi.OrigKeyColIDs, OrigInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.OrigInclColIDs)
+        , N'█' [██], mi.IndexID, mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint
+                   , mi.PhysKeyColIDs, mi.PhysInclColIDs
+        --         , mi.OrigKeyColIDs, mi.OrigInclColIDs
                    , mi.ObjColCount, mi.CurrIdxColCount, x.ColDiffCount
-        , N'█ Covers --> █' [██], mf.ID, mf.index_id, mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint
+        , N'█ Covers --> █' [██], mf.IndexID, mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint
                    , mf.PhysKeyColIDs, mf.PhysInclColIDs
         --         , mf.OrigKeyColIDs, mf.OrigInclColIDs
-                   , mf.FQIN
-        , N'█' [██], mi.PhysInclCols, mf.PhysInclCols
+        --         , mf.FQIN
+        , N'█' [██], [ExtraCols - {col_id}column_name datatype, ...] = ec.ExtraCols
     FROM #idx_cover o
-        JOIN #idx mi ON mi.ID = o.MergeIntoID
-        JOIN #idx mf ON mf.ID = o.MergeFromID
-        CROSS APPLY (SELECT ColDiffCount = IIF(mi.IndexTypeID = 1, mi.ObjColCount, mi.CurrIdxColCount) - mf.CurrIdxColCount) x
+        JOIN #idx mi ON mi.IndexID = o.MergeIntoID
+        JOIN #idx mf ON mf.IndexID = o.MergeFromID
+        LEFT JOIN #idx_cover_extra_cols ec ON ec.MatchID = o.MatchID
+        CROSS APPLY (SELECT ColDiffCount = mi.CurrIdxColCount - mf.CurrIdxColCount) x
     WHERE 1=1
         AND NOT EXISTS (SELECT * FROM #idx_cover c WHERE c.MergeFromID = o.MergeIntoID) -- Prevent hierarchies by excluding any parent indexes who also have parents
-        AND x.ColDiffCount <= 2 -- Exclude matches when the column difference is significant. If an index has 40 columns, and the matching index has 2, then it's unlikely a candidate to drop
+        AND x.ColDiffCount <= 5 -- Exclude matches when the column difference is significant. If an index has 40 columns, and the matching index has 2, then it's unlikely a candidate to drop
     ORDER BY mi.SchemaName, mi.ObjectName, mi.filter_definition, mi.IndexName, mf.IndexName;
 
     -- Mergeable
     SELECT 'Mergeable indexes';
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
-        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint, mi.PhysKeyColIDs, PhysInclColIDs = IIF(mi.IndexTypeID = 1, '<<ALL>>', mi.PhysInclColIDs)
+        , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint, mi.PhysKeyColIDs, mi.PhysInclColIDs
         , N'█ Can merge with --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint, mf.PhysKeyColIDs, mf.PhysInclColIDs, m.ExtraColCount
     FROM #idx_merge m
-        JOIN #idx mi ON mi.ID = m.MergeIntoID
-        JOIN #idx mf ON mf.ID = m.MergeFromID
+        JOIN #idx mi ON mi.IndexID = m.MergeIntoID
+        JOIN #idx mf ON mf.IndexID = m.MergeFromID
     ORDER BY mi.SchemaName, mi.ObjectName, mi.filter_definition, mi.IndexName, mf.IndexName;
 ------------------------------------------------------------------------------
 
