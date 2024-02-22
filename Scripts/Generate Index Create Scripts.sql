@@ -15,12 +15,12 @@ GO
 
 ------------------------------------------------------------------------------
 -- Options
-DECLARE @ScriptExistsCheck bit     = 1,
-        @EnableOnline      bit     = 0, --IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
-        @BatchSeparator    bit     = 1,
-        @FormatSQL         bit     = 1,
-        @TrailingLineBreak bit     = 1,
-        @AddOutputMessages  bit     = 0,
+DECLARE @ScriptExistsCheck bit     = 0,
+        @EnableOnline      bit     = 1, --IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
+        @BatchSeparator    bit     = 0,
+        @FormatSQL         bit     = 0,
+        @TrailingLineBreak bit     = 0,
+        @AddOutputMessages bit     = 0,
         @MAXDOP            tinyint = 0; -- 0 = Default
 ------------------------------------------------------------------------------
 
@@ -28,8 +28,8 @@ DECLARE @ScriptExistsCheck bit     = 1,
 -- Other
 DECLARE @rn nchar(2) = NCHAR(13)+NCHAR(10), -- CRLF - \r\n
         @t  nchar(1) = NCHAR(9),            -- tab - \t
-        @d    nchar(1) = NCHAR(9999), -- Delimeter to use for separating values in templates
-        @q    nchar(1) = '''',        -- Single quote
+        @d  nchar(1) = NCHAR(9999),         -- Delimeter to use for separating values in templates
+        @q  nchar(1) = '''',                -- Single quote
         @qq nchar(2) = '''''';              -- Double single quote
 ------------------------------------------------------------------------------
 
@@ -71,13 +71,13 @@ FROM sys.indexes i
     LEFT HASH JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id
     JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     CROSS APPLY (
-        SELECT KeyColsN        = STRING_AGG(IIF(ic.is_included_column = 0                          , n.ColN  , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
-            ,  KeyColsNQO      = STRING_AGG(IIF(ic.is_included_column = 0                          , t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
-            ,  InclColsNQ      = STRING_AGG(IIF(ic.is_included_column = 1                          , q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+        SELECT KeyColsN   = STRING_AGG(IIF(ic.is_included_column = 0, n.ColN  , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+            ,  KeyColsNQO = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+            ,  InclColsNQ = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
         FROM sys.index_columns ic
-            CROSS APPLY (SELECT ColN    = COL_NAME(ic.[object_id], ic.column_id)) n
-            CROSS APPLY (SELECT ColNQ   = QUOTENAME(n.ColN)) q
-            CROSS APPLY (SELECT ColNQO  = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
+            CROSS APPLY (SELECT ColN   = COL_NAME(ic.[object_id], ic.column_id)) n
+            CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q
+            CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
     CROSS APPLY (SELECT FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))) x
@@ -97,9 +97,9 @@ DECLARE @SqlDrop     nvarchar(4000) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schem
 
 IF OBJECT_ID('tempdb..#output', 'U') IS NOT NULL DROP TABLE #output; --SELECT * FROM #output
 SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
-	, i.ObjectType, i.ObjectTypeCode, i.IndexType
-	, i.IsUnique, i.IgnoreDupKey, i.IsPrimaryKey, i.IsUniqueConstraint, i.[FillFactor], i.IsPadded, i.IsDisabled, i.AllowRowLocks, i.AllowPageLocks, i.HasFilter, i.FilterDefinition
-	, i.StatNoRecompute, i.StatIsIncremental, i.DataCompressionType
+    , i.ObjectType, i.ObjectTypeCode, i.IndexType
+    , i.IsUnique, i.IgnoreDupKey, i.IsPrimaryKey, i.IsUniqueConstraint, i.[FillFactor], i.IsPadded, i.IsDisabled, i.AllowRowLocks, i.AllowPageLocks, i.HasFilter, i.FilterDefinition
+    , i.StatNoRecompute, i.StatIsIncremental, i.DataCompressionType
     , i.FGName, i.FGIsDefault
     , KeyCols              = REPLACE(i.KeyColsNQO, @d, ', ')
     , InclCols             = REPLACE(i.InclColsNQ, @d, ', ')
@@ -114,10 +114,10 @@ SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
 INTO #output
 FROM #tmp_indexes i
     CROSS APPLY (
-        SELECT DatabaseName  = QUOTENAME(i.DatabaseName)
-            ,  SchemaName    = QUOTENAME(i.SchemaName)
-            ,  ObjectName    = QUOTENAME(i.ObjectName)
-            ,  IndexName     = QUOTENAME(i.IndexName)
+        SELECT DatabaseName = QUOTENAME(i.DatabaseName)
+            ,  SchemaName   = QUOTENAME(i.SchemaName)
+            ,  ObjectName   = QUOTENAME(i.ObjectName)
+            ,  IndexName    = QUOTENAME(i.IndexName)
             ,  FGName       = QUOTENAME(i.FGName)
     ) q
     -- Create the base scripts for each section
@@ -156,7 +156,7 @@ FROM #tmp_indexes i
     CROSS APPLY (
         SELECT IsConstraint       = IIF(i.IsPrimaryKey = 1 OR i.IsUniqueConstraint = 1, 1, 0)
             ,  ConstraintType     = CASE WHEN i.IsPrimaryKey = 1 THEN 'PRIMARY KEY' WHEN i.IsUniqueConstraint = 1 THEN 'UNIQUE' ELSE NULL END
-            ,  ConstraintTypeCode = CASE WHEN i.IsPrimaryKey = 1 THEN 'PK' WHEN i.IsUniqueConstraint = 1 THEN 'UQ' ELSE 'IX' END
+            ,  ConstraintTypeCode = CASE WHEN i.IsPrimaryKey = 1 THEN 'PK'          WHEN i.IsUniqueConstraint = 1 THEN 'UQ'     ELSE 'IX' END
             ,  IndexType          = CONCAT_WS(' ', IIF(i.IsUnique = 1, 'UNIQUE', NULL), i.IndexType)
     ) x
     CROSS APPLY ( -- Optional parts should return NULL
