@@ -81,7 +81,7 @@ FROM sys.indexes i
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
     CROSS APPLY (SELECT FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))) x
-WHERE i.[type] > 0 -- Exclude index heap records (just the index, not the object, we still want NONCLUSTERED indexes on heaps)
+WHERE i.[type] IN (1,2) -- Limited to only clustered/non-clustered rowstore indexes
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND o.is_ms_shipped = 0
     -- Support limitations -->
