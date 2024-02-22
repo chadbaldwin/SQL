@@ -75,9 +75,9 @@ FROM sys.indexes i
             ,  KeyColsNQO = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
             ,  InclColsNQ = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
         FROM sys.index_columns ic
-            CROSS APPLY (SELECT ColN   = COL_NAME(ic.[object_id], ic.column_id)) n
-            CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q
-            CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t
+            CROSS APPLY (SELECT ColN   = COL_NAME(ic.[object_id], ic.column_id)) n                               -- ColumnName
+            CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q                                                    -- [ColumnName]
+            CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t -- [ColumnName] DESC
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
     CROSS APPLY (SELECT FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))) x
