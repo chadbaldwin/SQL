@@ -30,7 +30,7 @@
   IndexA is a     unique,     clustered index with:   KEY (A, B, C, F)
   IndexB is a non-unique, non-clustered index with:   KEY (B, C)       INCLUDE (D, E, A)
 
-  The actual index structure would be created as:     KEY (B, C, A, F) INCLUDE (D, E)       -- A is promoted to key, F is added as a key
+  The physical structure for IndexB would be::        KEY (B, C, A, F) INCLUDE (D, E)       -- A is promoted to key, F is added as a key
   If IndexB were instead a unique index, it would be: KEY (B, C)       INCLUDE (D, E, A, F) -- The key stays the same, but A and F are added as includes
 
   Using the physical structure instead of the defined structure helps detect more duplicate and covered indexes and prevents false positives.
