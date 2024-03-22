@@ -352,7 +352,7 @@
     INTO #idx_dupes
     FROM (
         SELECT DupeGroupID    = MIN(x.IndexID) OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
-            ,  DupeGroupCount = COUNT(*)  OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
+            ,  DupeGroupCount = COUNT(*)       OVER (PARTITION BY x.SchemaName, x.ObjectName, x.filter_definition, x.PhysKeyColIDs, x.PhysInclColIDs)
             , x.IndexID
         FROM #idx x
         WHERE x.IndexType = 'NONCLUSTERED' -- Non-clustered indexes only. "Duplicates" involving clustered indexes will be classified as other match types (likely as covering indexes).
