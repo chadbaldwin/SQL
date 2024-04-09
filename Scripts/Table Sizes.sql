@@ -29,7 +29,7 @@ FROM (
 			, TotalKB			= SUM(a.total_pages) * 8.0
 			, UsedKB			= SUM(a.used_pages) * 8.0
 			, UnusedKB			= (SUM(a.total_pages) - SUM(a.used_pages)) * 8.0
-			, CompressionType	= CHOOSE(MAX(p.[data_compression])+1, 'NONE', 'ROW', 'PAGE', 'COLUMNSTORE')
+			, CompressionType	= STRING_AGG(CONCAT(a.[type_desc], ': ', p.data_compression_desc), ', ') WITHIN GROUP (ORDER BY a.[type_desc])
 		FROM sys.tables t
 			JOIN sys.indexes i ON t.[object_id] = i.[object_id]
 			JOIN sys.partitions p ON i.[object_id] = p.[object_id] AND i.index_id = p.index_id
@@ -37,6 +37,7 @@ FROM (
 		WHERE t.is_ms_shipped = 0
 			AND i.[object_id] > 255
 			AND i.index_id <= 1 -- Heaps and clustered indexes only
+			AND a.total_pages > 0
 		GROUP BY t.[name], SCHEMA_NAME(t.[schema_id]), p.[rows]
 	) x
 ) x
