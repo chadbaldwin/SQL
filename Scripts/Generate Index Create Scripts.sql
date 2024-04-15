@@ -34,32 +34,32 @@ DECLARE @rn nchar(2) = NCHAR(13)+NCHAR(10), -- CRLF - \r\n
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
--- Populate temp table with dependent infomation
+-- Populate temp table with dependent information
 ------------------------------------------------------------------------------
-IF OBJECT_ID('tempdb..#tmp_indexes', 'U') IS NOT NULL DROP TABLE #tmp_indexes; --SELECT * FROM #tmp_indexes
-SELECT DatabaseName       = DB_NAME()
-    , SchemaName          = SCHEMA_NAME(o.[schema_id])
-    , ObjectName          = o.[name]
-    , IndexName           = i.[name]
-    , FQIN                = x.FQIN
+IF OBJECT_ID('tempdb..#tmp_indexes','U') IS NOT NULL DROP TABLE #tmp_indexes; --SELECT * FROM #tmp_indexes
+SELECT DatabaseName          = DB_NAME()
+    , SchemaName            = SCHEMA_NAME(o.[schema_id])
+    , ObjectName            = o.[name]
+    , IndexName             = i.[name]
+    , FQIN                  = x.FQIN
     , ObjectTypeCode      = RTRIM(o.[type]) COLLATE DATABASE_DEFAULT
-    , ObjectType          = o.[type_desc] COLLATE DATABASE_DEFAULT
-    , IndexType           = i.[type_desc] COLLATE DATABASE_DEFAULT
-    , IsUnique            = i.is_unique
-    , FGName              = fg.[name]
-    , FGIsDefault         = fg.is_default
-    , IgnoreDupKey        = i.[ignore_dup_key]
-    , IsPrimaryKey        = i.is_primary_key
-    , IsUniqueConstraint  = i.is_unique_constraint
-    , [FillFactor]        = i.fill_factor
-    , IsPadded            = i.is_padded
-    , IsDisabled          = i.is_disabled
-    , AllowRowLocks       = i.[allow_row_locks]
-    , AllowPageLocks      = i.[allow_page_locks]
-    , HasFilter           = i.has_filter
-    , FilterDefinition    = i.filter_definition
-    , StatNoRecompute     = st.no_recompute
-    , StatIsIncremental   = st.is_incremental
+    , ObjectType            = o.[type_desc] COLLATE DATABASE_DEFAULT
+    , IndexType             = i.[type_desc] COLLATE DATABASE_DEFAULT
+    , IsUnique              = i.is_unique
+    , FGName                = fg.[name]
+    , FGIsDefault           = fg.is_default
+    , IgnoreDupKey          = i.[ignore_dup_key]
+    , IsPrimaryKey          = i.is_primary_key
+    , IsUniqueConstraint    = i.is_unique_constraint
+    , [FillFactor]          = i.fill_factor
+    , IsPadded              = i.is_padded
+    , IsDisabled            = i.is_disabled
+    , AllowRowLocks         = i.[allow_row_locks]
+    , AllowPageLocks        = i.[allow_page_locks]
+    , HasFilter             = i.has_filter
+    , FilterDefinition      = i.filter_definition
+    , StatNoRecompute       = st.no_recompute
+    , StatIsIncremental     = st.is_incremental
     , DataCompressionType = p.[data_compression_desc] COLLATE DATABASE_DEFAULT
     , kc.KeyColsN, kc.KeyColsNQO, kc.InclColsNQ
 INTO #tmp_indexes
@@ -75,9 +75,9 @@ FROM sys.indexes i
             ,  KeyColsNQO = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
             ,  InclColsNQ = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
         FROM sys.index_columns ic
-            CROSS APPLY (SELECT ColN   = COL_NAME(ic.[object_id], ic.column_id)) n                               -- ColumnName
-            CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q                                                    -- [ColumnName]
-            CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t -- [ColumnName] DESC
+            CROSS APPLY (SELECT ColN   = COL_NAME(ic.[object_id], ic.column_id)) n                                  -- ColumnName
+            CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q                                                       -- [ColumnName]
+            CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t    -- [ColumnName] DESC
         WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
     ) kc
     CROSS APPLY (SELECT FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))) x
@@ -95,6 +95,7 @@ DECLARE @SqlDrop     nvarchar(4000) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schem
         @SqlDisable  nvarchar(4000) = 'ALTER INDEX {{Index}} ON {{Schema}}.{{Object}} DISABLE;',
         @SqlDropPKUQ nvarchar(4000) = 'ALTER TABLE {{Schema}}.{{Object}} DROP CONSTRAINT {{Index}};';
 
+RAISERROR('Assemble the command text',0,1) WITH NOWAIT;
 IF OBJECT_ID('tempdb..#output', 'U') IS NOT NULL DROP TABLE #output; --SELECT * FROM #output
 SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
     , i.ObjectType, i.ObjectTypeCode, i.IndexType
@@ -131,7 +132,7 @@ FROM #tmp_indexes i
         SELECT CreateOptions = STRING_AGG(IIF(opt.IsBuildOption = 0, opt.n+' = '+opt.v, NULL), ', ')
             ,  BuildOptions  = STRING_AGG(IIF(opt.IsBuildOption = 1, opt.n+' = '+opt.v, NULL), ', ')
         FROM ( -- Default values that want to be excluded should return NULL
-            VALUES 
+            VALUES
                 -- Index settings/configuration
                   (0, 'PAD_INDEX'                  , IIF(i.IsPadded = 1            , 'ON',   NULL))
                 , (0, 'FILLFACTOR'                 , IIF(i.[FillFactor] NOT IN (0,100), CONVERT(nvarchar(3), i.[FillFactor]), NULL)) -- 0 means to use the default, which is 100
@@ -177,6 +178,7 @@ FROM #tmp_indexes i
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+RAISERROR('Format SQL',0,1) WITH NOWAIT;
 IF (@FormatSQL = 1)
 BEGIN;
     UPDATE o
@@ -192,19 +194,21 @@ END;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+RAISERROR('Add output messages',0,1) WITH NOWAIT;
 IF (@AddOutputMessages = 1)
 BEGIN;
-    DECLARE @SqlOutputMessage nvarchar(4000) = 'RAISERROR(''Execute: {{Message}}'',0,1) WITH NOWAIT;';
+    DECLARE @SqlOutputMessage nvarchar(4000) = 'RAISERROR(''    Execute: {{Message}}'',0,1) WITH NOWAIT;';
     UPDATE o
-    SET o.CreateScript    = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.CreateOn     , @q, @qq)) + @rn + o.CreateScript,
-        o.DropScript      = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DropScript   , @q, @qq)) + @rn + o.DropScript,
-        o.RebuildScript   = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.RebuildScript, @q, @qq)) + @rn + o.RebuildScript,
-        o.DisableScript   = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DisableScript, @q, @qq)) + @rn + o.DisableScript
+    SET o.CreateScript  = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.CreateOn     , @q, @qq)) + @rn + o.CreateScript,
+        o.DropScript    = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DropScript   , @q, @qq)) + @rn + o.DropScript,
+        o.RebuildScript = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.RebuildScript, @q, @qq)) + @rn + o.RebuildScript,
+        o.DisableScript = REPLACE(@SqlOutputMessage, '{{Message}}', REPLACE(o.DisableScript, @q, @qq)) + @rn + o.DisableScript
     FROM #Output o;
 END;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+RAISERROR('Add exists checks',0,1) WITH NOWAIT;
 IF (@ScriptExistsCheck = 1)
 BEGIN;
     DECLARE @SqlIfNotExists nvarchar(4000) = 'IF (OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL' + @rn
@@ -233,6 +237,7 @@ END;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+RAISERROR('Add batch separator and trailing line break',0,1) WITH NOWAIT;
 IF (@BatchSeparator = 1 OR @TrailingLineBreak = 1)
 BEGIN;
     UPDATE o
@@ -248,6 +253,7 @@ END;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+RAISERROR('Output',0,1) WITH NOWAIT;
 SELECT *
 FROM #output i
 ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
