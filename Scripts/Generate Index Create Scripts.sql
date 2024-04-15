@@ -42,12 +42,13 @@ SELECT DatabaseName          = DB_NAME()
     , ObjectName            = o.[name]
     , IndexName             = i.[name]
     , FQIN                  = x.FQIN
-    , ObjectTypeCode      = RTRIM(o.[type]) COLLATE DATABASE_DEFAULT
+    , ObjectTypeCode        = RTRIM(CONVERT(varchar(2), o.[type] COLLATE DATABASE_DEFAULT))
     , ObjectType            = o.[type_desc] COLLATE DATABASE_DEFAULT
     , IndexType             = i.[type_desc] COLLATE DATABASE_DEFAULT
     , IsUnique              = i.is_unique
     , FGName                = fg.[name]
     , FGIsDefault           = fg.is_default
+    , FGType                = fg.[type]
     , IgnoreDupKey          = i.[ignore_dup_key]
     , IsPrimaryKey          = i.is_primary_key
     , IsUniqueConstraint    = i.is_unique_constraint
@@ -60,8 +61,10 @@ SELECT DatabaseName          = DB_NAME()
     , FilterDefinition      = i.filter_definition
     , StatNoRecompute       = st.no_recompute
     , StatIsIncremental     = st.is_incremental
-    , DataCompressionType = p.[data_compression_desc] COLLATE DATABASE_DEFAULT
-    , kc.KeyColsN, kc.KeyColsNQO, kc.InclColsNQ
+    , DataCompressionType   = p.data_compression_desc COLLATE DATABASE_DEFAULT
+    , KeyColsN              = kc.KeyColsN
+    , KeyColsNQO            = kc.KeyColsNQO
+    , InclColsNQ            = kc.InclColsNQ
 INTO #tmp_indexes
 FROM sys.indexes i
     JOIN sys.objects o ON o.[object_id] = i.[object_id]
