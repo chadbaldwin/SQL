@@ -124,7 +124,9 @@ SELECT i.[object_id], i.index_id
     , ObjectType                = o.[type_desc]
     , ObjectCreateDate          = tz.ObjectCreateDate
     , IndexType                 = i.[type_desc]
-    , IndexCreateDate           = tz.IndexCreateDate /* Only available on unique indexes */
+    , IndexCreateDate           = tz.ConstraintCreateDate /* Only available on unique indexes since they have constraint objects.
+                                                             Adding a non-unique clustered index does not reset the object create date.
+                                                             Therefore, we cannot rely on the object "create_date" value in those cases  */
     , IndexKeyCols              = cs.KeyCols
     , IndexIncludecols          = cs.InclCols
 
@@ -138,7 +140,7 @@ SELECT i.[object_id], i.index_id
     , IsPadded                  = i.is_padded
     , IsDisabled                = i.is_disabled
     , IsHypothetical            = i.is_hypothetical
---  , IsIgnoredInOptimization   = i.is_ignored_in_optimization
+--  , IsIgnoredInOptimization   = i.is_ignored_in_optimization /* Undocumented column */
     , AllowRowLocks             = i.[allow_row_locks]
     , AllowPageLocks            = i.[allow_page_locks]
     , HasFilter                 = i.has_filter
@@ -194,7 +196,7 @@ FROM sys.indexes i
         /*  Unfortunately, SQL Server stores everything using system time, rather than UTC. Need to convert to UTC for historical storage */
         /*  First set the values to the local time zone (no shift), then convert to UTC (with shift) */
         SELECT ObjectCreateDate     = CONVERT(datetime2, o.create_date                          AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
-            ,  IndexCreateDate      = CONVERT(datetime2, kc.create_date                         AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
+            ,  ConstraintCreateDate = CONVERT(datetime2, kc.create_date                         AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
             ,  StatsDate            = CONVERT(datetime2, STATS_DATE(i.[object_id], i.index_id)  AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
             ,  LastSeek             = CONVERT(datetime2, ius.last_user_seek                     AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
             ,  LastScan             = CONVERT(datetime2, ius.last_user_scan                     AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
@@ -202,7 +204,7 @@ FROM sys.indexes i
             ,  LastUpdate           = CONVERT(datetime2, ius.last_user_update                   AT TIME ZONE @LocalTZ AT TIME ZONE 'UTC')
     ) tz
     CROSS APPLY (SELECT LastRead = MAX(x.LastRead) FROM (VALUES (tz.LastSeek), (tz.LastScan), (tz.LastLookup)) x(LastRead)) l
-    /*  This is a best attempt determination of when the current stats snapshot we're currently taking likely began.
+    /*  This is a best attempt determination of when the stats snapshot we're currently taking likely began.
 
         Restarting SQL Server and restoring a database clears out the stats tables. However, if an index is
         dropped and recreated, then the age of the snapshot is as of the index create date instead. Since
@@ -211,7 +213,7 @@ FROM sys.indexes i
 
         So the best solution (without creating some other process) is to take the max of all those dates.
     */
-    CROSS APPLY (SELECT BeginDate = MAX(x.BeginDate) FROM (VALUES (@SQLServerStartTime), (@DBLastRestoreTime), (tz.ObjectCreateDate), (tz.IndexCreateDate)) x(BeginDate)) r;
+    CROSS APPLY (SELECT BeginDate = MAX(x.BeginDate) FROM (VALUES (@SQLServerStartTime), (@DBLastRestoreTime), (tz.ObjectCreateDate), (tz.ConstraintCreateDate)) x(BeginDate)) r;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
