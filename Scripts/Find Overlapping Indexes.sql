@@ -49,9 +49,12 @@
   Even though their defined structure appears to be covered, their physical structure is not.
 */
 
-/*  Considerations:
+/*  Considerations / TODO:
   - Improve ability to compare the entire index definition. Currently, only keys and includes are compared.
     However, things like...padding, fillfactor and other settings are ignored.
+  - Add list of column differences for mergeable indexes. For now it's just a list of column ID's which isnt very helpful.
+  - Should clustered vs nonclustered and/or unique vs non-unique duplicate matches indexes be classified as "duplicate"
+    or overlapping? (currently classified as overlapping)
 */
 ------------------------------------------------------------------------------
 
@@ -214,7 +217,7 @@
     INTO #idx_col_cnt
     FROM #target_indexes i
         JOIN #idx_cols ic ON ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
-	WHERE ic.rn = 1
+    WHERE ic.rn = 1
     GROUP BY i.[object_id], i.index_id, i.IndexType;
 
     IF OBJECT_ID('tempdb..#obj_col_cnt','U') IS NOT NULL DROP TABLE #obj_col_cnt; --SELECT * FROM #obj_col_cnt
