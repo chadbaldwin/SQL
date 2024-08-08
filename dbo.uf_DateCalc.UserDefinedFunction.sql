@@ -19,7 +19,7 @@ BEGIN;
             ,  DiffWK = DATEDIFF(WEEK   , 0, @SeedDate)
             ,  DiffMM = DATEDIFF(MONTH  , 0, @SeedDate)
             ,  DiffQQ = DATEDIFF(QUARTER, 0, @SeedDate)
-			,  DiffYY = DATEDIFF(YEAR   , 0, @SeedDate)
+            ,  DiffYY = DATEDIFF(YEAR   , 0, @SeedDate)
     )
     INSERT INTO @Return (Code, [Label], BeginDate, EndDateInclusiveDT, EndDateInclusiveDT2, EndDateExclusive)
     SELECT Code               = x.Code
@@ -51,8 +51,8 @@ BEGIN;
         ) x(Code, [Period], BeginDate, EndDate)
     WHERE x.Code = @DateCode OR @DateCode IS NULL
     UNION
-	-- Handling for P7D and L7D style date codes
-	-- Supporting only days for now. Months requires a bit more work to calcualte the end of month value.
+    -- Handling for P7D and L7D style date codes
+    -- Supporting only days for now. Months requires a bit more work to calcualte the end of month value.
     SELECT Code               = UPPER(@DateCode)
         , [Label]             = CONCAT_WS(' ', CASE LEFT(@DateCode, 1) WHEN 'L' THEN 'Last' WHEN 'P' THEN 'Previous' ELSE NULL END, t.[Value], 'days')
         , BeginDate           = CONVERT(datetime2, x.BeginDate)
@@ -69,7 +69,18 @@ BEGIN;
         ) x
     WHERE  @DateCode LIKE '[LP][0-9]D'
         OR @DateCode LIKE '[LP][0-9][0-9]D'
-        OR @DateCode LIKE '[LP][0-9][0-9][0-9]D';
+        OR @DateCode LIKE '[LP][0-9][0-9][0-9]D'
+
+    IF (@DateCode IS NULL) -- If the DateCode is not provided, then fill in some standard options
+    BEGIN;
+        -- Ew, gross, recursion, I know. But, it's the easiest way to include both a common set of options, while still supporting dynamic entries
+        INSERT INTO @Return (Code, [Label], BeginDate, EndDateInclusiveDT, EndDateInclusiveDT2, EndDateExclusive)
+        SELECT y.Code, y.[Label], y.BeginDate, y.EndDateInclusiveDT, y.EndDateInclusiveDT2, y.EndDateExclusive
+        FROM (VALUES ('L7D'),('L14D'),('L30D'),('L60D'),('L90D')
+                    ,('P7D'),('P14D'),('P30D'),('P60D'),('P90D')
+        ) x(DateCode)
+            CROSS APPLY dbo.uf_DateCalc(@SeedDate, x.DateCode) y
+    END;
 
     RETURN;
 END;
