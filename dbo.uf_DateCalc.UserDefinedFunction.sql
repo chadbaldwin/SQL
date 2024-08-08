@@ -51,6 +51,8 @@ BEGIN;
         ) x(Code, [Period], BeginDate, EndDate)
     WHERE x.Code = @DateCode OR @DateCode IS NULL
     UNION
+	-- Handling for P7D and L7D style date codes
+	-- Supporting only days for now. Months requires a bit more work to calcualte the end of month value.
     SELECT Code                 = UPPER(@DateCode)
         , [Label]               = CONCAT_WS(' ', CASE LEFT(@DateCode, 1) WHEN 'L' THEN 'Last' WHEN 'P' THEN 'Previous' ELSE NULL END, t.[Value], 'days')
         , BeginDate             = CONVERT(datetime2, x.BeginDate)
@@ -72,3 +74,5 @@ BEGIN;
     RETURN;
 END;
 GO
+
+-- SELECT * FROM dbo.uf_DateCalc(NULL, NULL)
