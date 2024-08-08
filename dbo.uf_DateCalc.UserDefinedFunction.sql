@@ -1,75 +1,74 @@
-IF OBJECT_ID('dbo.uf_DateCalc') IS NOT NULL DROP FUNCTION dbo.uf_DateCalc
-GO
--- =============================================
--- Author:		Chad Baldwin
--- Create date: 2017-04-13
--- Description:	Dates
--- =============================================
-CREATE FUNCTION dbo.uf_DateCalc (	
-	@SeedDate DATE,
-	@DateCode VARCHAR(5)
+CREATE OR ALTER FUNCTION dbo.uf_DateCalc (  
+    @SeedDate date = NULL,
+    @DateCode varchar(5) = NULL
 )
-RETURNS @Return TABLE  (
-	Code			VARCHAR(5),
-	Label			VARCHAR(100),
-	BeginDate		DATETIME,
-	EndDate			DATETIME,
-	EndOfDayDate	DATETIME
+RETURNS @Return table  (
+    Code                varchar(5)      NOT NULL,
+    [Label]             varchar(100)    NOT NULL,
+    BeginDate           datetime2       NOT NULL,
+    EndDateInclusiveDT  datetime        NOT NULL,
+    EndDateInclusiveDT2 datetime2       NOT NULL,
+    EndDateExclusive    datetime2       NOT NULL
 )
 AS
-BEGIN
-	SELECT @SeedDate	= COALESCE(@SeedDate, GETDATE())
+BEGIN;
+    SELECT @SeedDate    = COALESCE(@SeedDate, GETDATE());
 
-	INSERT INTO @Return (Code, Label, BeginDate, EndDate, EndOfDayDate)
-	SELECT Code			= x.Code
-		, Label			= CONVERT(VARCHAR(100), x.[Period])
-		, BeginDate		= CONVERT(DATETIME, x.BeginDate)
-		, EndDate		= CONVERT(DATETIME, x.EndDate)
-		, EndOfDayDate	= x.EndDate + CONVERT(DATETIME, '23:59:59.997')
-	FROM (
-		SELECT Today = CONVERT(DATETIME, @SeedDate) --Reporting on last complete day
-	) t
-		CROSS APPLY (SELECT DiffYY	= DATEDIFF(yy, 0, t.Today)
-						,   DiffMM	= DATEDIFF(mm, 0, t.Today)
-						,   DiffWK	= DATEDIFF(wk, 0, t.Today)
-						,   DiffDD	= DATEDIFF(dd, 0, t.Today)
-						,   DiffQQ	= DATEDIFF(qq, 0, t.Today)
-		) y
-		CROSS APPLY (
-			VALUES 	  ('D'		, 'Day'								, t.Today						, t.Today							)
-					, ('M'		, 'Month'							, DATEADD(mm, y.DiffMM, 0)		, DATEADD(mm, y.DiffMM + 1, 0) - 1	)
-					, ('MTD'	, 'Month To Date'					, DATEADD(mm, y.DiffMM, 0)		, t.Today							)
-					, ('Q'		, 'Quarter'							, DATEADD(qq, y.DiffQQ, 0)		, DATEADD(qq, y.DiffQQ + 1, 0) - 1	)
-					, ('QTD'	, 'Quarter to Date'					, DATEADD(qq, y.DiffQQ, 0)		, t.Today							)
-					, ('YTD'	, 'Year To Date'					, DATEADD(yy, y.DiffYY, 0)		, t.Today							)
+    WITH cte_Dates AS (
+        SELECT DiffYY   = DATEDIFF(yy, 0, @SeedDate)
+            ,  DiffMM   = DATEDIFF(mm, 0, @SeedDate)
+            ,  DiffWK   = DATEDIFF(wk, 0, @SeedDate)
+            ,  DiffDD   = DATEDIFF(dd, 0, @SeedDate)
+            ,  DiffQQ   = DATEDIFF(qq, 0, @SeedDate)
+    )
+    INSERT INTO @Return (Code, [Label], BeginDate, EndDateInclusiveDT, EndDateInclusiveDT2, EndDateExclusive)
+    SELECT Code                 = x.Code
+        , [Label]               = CONVERT(varchar(100), x.[Period])
+        , BeginDate             = CONVERT(datetime2, x.BeginDate)
+        , EndDateInclusiveDT    = DATEADD(MILLISECOND, -3, DATEADD(DAY, 1, CONVERT(datetime, x.EndDate)))
+        , EndDateInclusiveDT2   = DATEADD(NANOSECOND, -100, DATEADD(DAY, 1, CONVERT(datetime2, x.EndDate))) -- +1 day -1 tick
+        , EndDateExclusive      = DATEADD(DAY, 1, CONVERT(datetime2, x.EndDate))
+    FROM cte_Dates t
+        CROSS APPLY (
+            VALUES    ('CD'     , 'Current Day'                     , @SeedDate                         , @SeedDate                                         )
+                    , ('CM'     , 'Current Month'                   , DATEADD(mm, t.DiffMM, 0)          , DATEADD(dd, -1, DATEADD(mm, t.DiffMM + 1, 0))     )
+                    , ('CMTD'   , 'Current Month To Date'           , DATEADD(mm, t.DiffMM, 0)          , @SeedDate                                         )
+                    , ('CQ'     , 'Current Quarter'                 , DATEADD(qq, t.DiffQQ, 0)          , DATEADD(dd, -1, DATEADD(qq, t.DiffQQ + 1, 0))     )
+                    , ('CQTD'   , 'Current Quarter to Date'         , DATEADD(qq, t.DiffQQ, 0)          , @SeedDate                                         )
+                    , ('CY'     , 'Current Year'                    , DATEADD(yy, t.DiffYY, 0)          , DATEADD(dd, -1, DATEADD(yy, t.DiffYY + 1, 0))     )
+                    , ('CYTD'   , 'Current Year To Date'            , DATEADD(yy, t.DiffYY, 0)          , @SeedDate                                         )
 
-					, ('PD'		, 'Previous Day'					, t.Today - 1					, t.Today - 1						)
-					, ('PW'		, 'Previous Week'					, DATEADD(wk, y.DiffWK - 1, 0)	, DATEADD(wk, y.DiffWK, 0) - 1		)
-					, ('PM'		, 'Previous Month'					, DATEADD(mm, y.DiffMM - 1, 0)	, DATEADD(mm, y.DiffMM, 0) - 1		)
-					, ('PMTD'	, 'Previous Month to Date'			, DATEADD(mm, y.DiffMM - 1, 0)	, DATEADD(mm, -1, t.Today)			)
-					, ('PQ'		, 'Previous Quarter'				, DATEADD(qq, y.DiffQQ - 1, 0)	, DATEADD(qq, y.DiffQQ, 0) - 1		)
-					, ('PQTD'	, 'Previous Quarter to Date'		, DATEADD(qq, y.DiffQQ - 1, 0)	, DATEADD(qq, -1, t.Today)			)
-					, ('PYQ'	, 'Previous Year Quarter'			, DATEADD(qq, y.DiffQQ - 4, 0)	, DATEADD(qq, y.DiffQQ - 3, 0) - 1	)
-					, ('PYQTD'	, 'Previous Year Quarter to Date'	, DATEADD(qq, y.DiffQQ - 4, 0)	, DATEADD(yy, -1, t.Today)			)
-					, ('PY'		, 'Previous Year'					, DATEADD(yy, y.DiffYY - 1, 0)	, DATEADD(yy, y.DiffYY, 0) - 1		)
-					, ('PYTD'	, 'Previous Year to Date'			, DATEADD(yy, y.DiffYY - 1, 0)	, DATEADD(yy, -1, t.Today)			)
+                    , ('PD'     , 'Previous Day'                    , DATEADD(dd, -1, @SeedDate)            , DATEADD(dd, -1, @SeedDate)                    )
+            --      , ('PW'     , 'Previous Week'                   , DATEADD(wk, y.DiffWK - 1, 0)      , DATEADD(dd, -1, DATEADD(wk, y.DiffWK, 0))         ) -- Removed temporarily - for some reason defaults to Monday as first day of week, despite DATEFIRST setting
+                    , ('PM'     , 'Previous Month'                  , DATEADD(mm, t.DiffMM - 1, 0)      , DATEADD(dd, -1, DATEADD(mm, t.DiffMM, 0))         )
+                    , ('PMTD'   , 'Previous Month to Date'          , DATEADD(mm, t.DiffMM - 1, 0)      , DATEADD(mm, -1, @SeedDate)                        )
+                    , ('PQ'     , 'Previous Quarter'                , DATEADD(qq, t.DiffQQ - 1, 0)      , DATEADD(dd, -1, DATEADD(qq, t.DiffQQ, 0))         )
+                    , ('PQTD'   , 'Previous Quarter to Date'        , DATEADD(qq, t.DiffQQ - 1, 0)      , DATEADD(qq, -1, @SeedDate)                        )
+                    , ('PYQ'    , 'Previous Year Quarter'           , DATEADD(qq, t.DiffQQ - 4, 0)      , DATEADD(dd, -1, DATEADD(qq, t.DiffQQ - 3, 0))     )
+                    , ('PYQTD'  , 'Previous Year Quarter to Date'   , DATEADD(qq, t.DiffQQ - 4, 0)      , DATEADD(yy, -1, @SeedDate)                        )
+                    , ('PY'     , 'Previous Year'                   , DATEADD(yy, t.DiffYY - 1, 0)      , DATEADD(dd, -1, DATEADD(yy, t.DiffYY, 0))         )
+                    , ('PYTD'   , 'Previous Year to Date'           , DATEADD(yy, t.DiffYY - 1, 0)      , DATEADD(yy, -1, @SeedDate)                        )
+        ) x(Code, [Period], BeginDate, EndDate)
+    WHERE x.Code = @DateCode OR @DateCode IS NULL
+    UNION
+    SELECT Code                 = UPPER(@DateCode)
+        , [Label]               = CONCAT_WS(' ', CASE LEFT(@DateCode, 1) WHEN 'L' THEN 'Last' WHEN 'P' THEN 'Previous' ELSE NULL END, t.[Value], 'days')
+        , BeginDate             = CONVERT(datetime2, x.BeginDate)
+        , EndDateInclusiveDT    = DATEADD(MILLISECOND, -3, DATEADD(DAY, 1, CONVERT(datetime, x.EndDate)))
+        , EndDateInclusiveDT2   = DATEADD(NANOSECOND, -100, DATEADD(DAY, 1, CONVERT(datetime2, x.EndDate))) -- +1 day -1 tick
+        , EndDateExclusive      = DATEADD(DAY, 1, CONVERT(datetime2, x.EndDate))
+    FROM (
+        SELECT [Value]          = CONVERT(int, SUBSTRING(@DateCode, 2, LEN(@DateCode)-2))
+            ,  Multiplier       = IIF(LEFT(@DateCode, 1) = 'P', 2, 1)
+    ) t
+        CROSS APPLY (
+            SELECT BeginDate    = DATEADD(DAY  , -((t.[Value] * t.Multiplier)-1), @SeedDate)
+                ,  EndDate      = DATEADD(DAY  , -(t.[Value] * (t.Multiplier-1)), @SeedDate)
+        ) x
+    WHERE  @DateCode LIKE '[LP][0-9]D'
+        OR @DateCode LIKE '[LP][0-9][0-9]D'
+        OR @DateCode LIKE '[LP][0-9][0-9][0-9]D';
 
-					, ('L7D'	, 'Last 7 days'						, t.Today - ( 7 - 1)			, t.Today							)
-					, ('L14D'	, 'Last 14 days'					, t.Today - (14 - 1)			, t.Today							)
-					, ('L21D'	, 'Last 21 days'					, t.Today - (21 - 1)			, t.Today							)
-					, ('L28D'	, 'Last 28 days'					, t.Today - (28 - 1)			, t.Today							)
-					, ('L30D'	, 'Last 30 days'					, t.Today - (30 - 1)			, t.Today							)
-					, ('L60D'	, 'Last 60 days'					, t.Today - (60 - 1)			, t.Today							)
-					, ('L90D'	, 'Last 90 days'					, t.Today - (90 - 1)			, t.Today							)
-
-				--	, ('L2M'	, 'Last 2 months'					, DATEADD(mm, y.DiffMM - 2, 0)	, DATEADD(mm, y.DiffMM, 0) - 1		)
-				--	, ('L3M'	, 'Last 3 months'					, DATEADD(mm, y.DiffMM - 3, 0)	, DATEADD(mm, y.DiffMM, 0) - 1		)
-				--	, ('L4M'	, 'Last 4 months'					, DATEADD(mm, y.DiffMM - 4, 0)	, DATEADD(mm, y.DiffMM, 0) - 1		)
-				--	, ('L5M'	, 'Last 5 months'					, DATEADD(mm, y.DiffMM - 5, 0)	, DATEADD(mm, y.DiffMM, 0) - 1		)
-				--	, ('L6M'	, 'Last 6 months'					, DATEADD(mm, y.DiffMM - 6, 0)	, DATEADD(mm, y.DiffMM, 0) - 1		)
-		) x(Code, [Period], BeginDate, EndDate)
-	WHERE x.Code = @DateCode OR @DateCode IS NULL
-
-	RETURN
-END
+    RETURN;
+END;
 GO
