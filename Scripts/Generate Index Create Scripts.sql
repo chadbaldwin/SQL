@@ -1,8 +1,17 @@
-﻿/*
+﻿SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+------------------------------------------------------------------------------
+GO
+------------------------------------------------------------------------------
+/*
     Unsupported options:
     * Filegroup types: Filestream, Memory-Optimized, Partitioned
     * Special index types: XML, HASH, Columnstore, Fulltext, Spatial
     * 2019+ new features - XML_COMPRESSION, OPTIMIZE_FOR_SEQUENTIAL_KEY, etc
+
+    Known bugs:
+    * Trailing spaces in index names - You shouldn't be doing this anyway, but if it happens by mistake
+      then this tool is not going to include the trailing spaces in the output. And if it does, it will
+      not be consistent.
 
     Considerations:
     * Add output message to ELSE for IF EXISTS option to indicate an action was skipped
@@ -12,7 +21,11 @@
 ------------------------------------------------------------------------------
 GO
 ------------------------------------------------------------------------------
-
+DROP TABLE IF EXISTS #indexes;
+DROP TABLE IF EXISTS #output;
+DROP TABLE IF EXISTS #cols;
+------------------------------------------------------------------------------ 
+GO
 ------------------------------------------------------------------------------
 -- Options
 DECLARE @ScriptExistsCheck bit     = 0,
@@ -36,14 +49,25 @@ DECLARE @rn nchar(2) = NCHAR(13)+NCHAR(10), -- CRLF - \r\n
 ------------------------------------------------------------------------------
 -- Populate temp table with dependent information
 ------------------------------------------------------------------------------
-IF OBJECT_ID('tempdb..#tmp_indexes','U') IS NOT NULL DROP TABLE #tmp_indexes; --SELECT * FROM #tmp_indexes
-SELECT DatabaseName          = DB_NAME()
-    , SchemaName            = SCHEMA_NAME(o.[schema_id])
+--DROP TABLE IF EXISTS #cols; --SELECT * FROM #cols;
+SELECT ic.[object_id], ic.index_id
+    , KeyColsN   = STRING_AGG(IIF(ic.is_included_column = 0, n.ColN  , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+    , KeyColsNQO = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+    , InclColsNQ = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
+INTO #cols
+FROM sys.index_columns ic
+    JOIN sys.columns c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
+    CROSS APPLY (SELECT ColN   = c.[name]) n                                                              -- ColumnName
+    CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q                                                     -- [ColumnName]
+    CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t  -- [ColumnName] DESC
+GROUP BY ic.[object_id], ic.index_id;
+
+--DROP TABLE IF EXISTS #indexes; --SELECT * FROM #indexes;
+SELECT SchemaName           = s.[name]
     , ObjectName            = o.[name]
     , IndexName             = i.[name]
     , FQIN                  = x.FQIN
     , ObjectTypeCode        = RTRIM(CONVERT(varchar(2), o.[type] COLLATE DATABASE_DEFAULT))
-    , ObjectType            = o.[type_desc] COLLATE DATABASE_DEFAULT
     , IndexType             = i.[type_desc] COLLATE DATABASE_DEFAULT
     , IsUnique              = i.is_unique
     , FGName                = fg.[name]
@@ -65,24 +89,15 @@ SELECT DatabaseName          = DB_NAME()
     , KeyColsN              = kc.KeyColsN
     , KeyColsNQO            = kc.KeyColsNQO
     , InclColsNQ            = kc.InclColsNQ
-INTO #tmp_indexes
-FROM sys.indexes i
-    JOIN sys.objects o ON o.[object_id] = i.[object_id]
-    JOIN sys.stats st ON st.[object_id] = i.[object_id] AND st.stats_id = i.index_id
+INTO #indexes
+FROM sys.schemas s
+    JOIN sys.objects o ON o.[schema_id] = s.[schema_id]
+    JOIN sys.indexes i ON i.[object_id] = o.[object_id]
     JOIN sys.filegroups fg ON fg.data_space_id = i.data_space_id
+    JOIN sys.stats st ON st.[object_id] = i.[object_id] AND st.stats_id = i.index_id
     -- Disabled indexes do not have sys.partitions records
-    LEFT HASH JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id
-    JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
-    CROSS APPLY (
-        SELECT KeyColsN   = STRING_AGG(IIF(ic.is_included_column = 0, n.ColN  , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
-            ,  KeyColsNQO = STRING_AGG(IIF(ic.is_included_column = 0, t.ColNQO, NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
-            ,  InclColsNQ = STRING_AGG(IIF(ic.is_included_column = 1, q.ColNQ , NULL), @d) WITHIN GROUP (ORDER BY ic.key_ordinal, n.ColN)
-        FROM sys.index_columns ic
-            CROSS APPLY (SELECT ColN   = COL_NAME(ic.[object_id], ic.column_id)) n                                  -- ColumnName
-            CROSS APPLY (SELECT ColNQ  = QUOTENAME(n.ColN)) q                                                       -- [ColumnName]
-            CROSS APPLY (SELECT ColNQO = CONCAT_WS(' ', q.ColNQ, IIF(ic.is_descending_key = 1, 'DESC', NULL))) t    -- [ColumnName] DESC
-        WHERE ic.[object_id] = i.[object_id] AND ic.index_id = i.index_id
-    ) kc
+    LEFT MERGE JOIN sys.partitions p ON p.[object_id] = i.[object_id] AND p.index_id = i.index_id
+    JOIN #cols kc ON kc.[object_id] = i.[object_id] AND kc.index_id = i.index_id
     CROSS APPLY (SELECT FQIN = CONCAT_WS('.', QUOTENAME(SCHEMA_NAME(o.[schema_id])), QUOTENAME(o.[name]), QUOTENAME(i.[name]))) x
 WHERE i.[type] IN (1,2) -- Limited to only clustered/non-clustered rowstore indexes
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
@@ -99,9 +114,9 @@ DECLARE @SqlDrop     nvarchar(4000) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schem
         @SqlDropPKUQ nvarchar(4000) = 'ALTER TABLE {{Schema}}.{{Object}} DROP CONSTRAINT {{Index}};';
 
 RAISERROR('Assemble the command text',0,1) WITH NOWAIT;
-IF OBJECT_ID('tempdb..#output', 'U') IS NOT NULL DROP TABLE #output; --SELECT * FROM #output
-SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
-    , i.ObjectType, i.ObjectTypeCode, i.IndexType
+--DROP TABLE IF EXISTS #output; --SELECT * FROM #output;
+SELECT i.SchemaName, i.ObjectName, i.IndexName
+    , i.ObjectTypeCode, i.IndexType
     , i.IsUnique, i.IgnoreDupKey, i.IsPrimaryKey, i.IsUniqueConstraint, i.[FillFactor], i.IsPadded, i.IsDisabled, i.AllowRowLocks, i.AllowPageLocks, i.HasFilter, i.FilterDefinition
     , i.StatNoRecompute, i.StatIsIncremental, i.DataCompressionType
     , i.FGName, i.FGIsDefault
@@ -116,10 +131,9 @@ SELECT i.DatabaseName, i.SchemaName, i.ObjectName, i.IndexName
     , RebuildScript        = IIF(x.IsConstraint = 1, NULL, CONCAT_WS(' ', s.RebuildScript, c.RebuildOptions)+';')
     , DisableScript        = IIF(x.IsConstraint = 1, NULL, s.DisableScript)
 INTO #output
-FROM #tmp_indexes i
+FROM #indexes i
     CROSS APPLY (
-        SELECT DatabaseName = QUOTENAME(i.DatabaseName)
-            ,  SchemaName   = QUOTENAME(i.SchemaName)
+        SELECT SchemaName   = QUOTENAME(i.SchemaName)
             ,  ObjectName   = QUOTENAME(i.ObjectName)
             ,  IndexName    = QUOTENAME(i.IndexName)
             ,  FGName       = QUOTENAME(i.FGName)
@@ -163,7 +177,7 @@ FROM #tmp_indexes i
             ,  ConstraintTypeCode = CASE WHEN i.IsPrimaryKey = 1 THEN 'PK'          WHEN i.IsUniqueConstraint = 1 THEN 'UQ'     ELSE 'IX' END
             ,  IndexType          = CONCAT_WS(' ', IIF(i.IsUnique = 1, 'UNIQUE', NULL), i.IndexType)
     ) x
-    CROSS APPLY ( -- Optional parts should return NULL
+    CROSS APPLY ( -- Optional parts should return NULL                                                      -- Example output:
         SELECT CreateBase       = 'CREATE '+x.IndexType+' INDEX '+q.IndexName                               -- CREATE UNIQUE NONCLUSTERED INDEX [IX_TableName]
             ,  OnObject         = 'ON '+q.SchemaName+'.'+q.ObjectName                                       -- ON [dbo].[TableName]
             ,  AlterTable       = 'ALTER TABLE '+q.SchemaName+'.'+q.ObjectName                              -- ALTER TABLE [dbo].[TableName]
@@ -214,13 +228,13 @@ END;
 RAISERROR('Add exists checks',0,1) WITH NOWAIT;
 IF (@ScriptExistsCheck = 1)
 BEGIN;
-    DECLARE @SqlIfNotExists nvarchar(4000) = 'IF (OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL' + @rn
+    DECLARE @SqlIfNotExists nvarchar(MAX) = 'IF (OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL' + @rn
                                             + @t + 'AND INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL' + @rn
                                             + ')' + @rn
                                             + 'BEGIN;' + @rn
                                             + @t + '{{Script}}' + @rn
                                             + 'END;',
-            @SqlIfExists    nvarchar(4000) = 'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)' + @rn
+            @SqlIfExists    nvarchar(MAX) = 'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)' + @rn
                                             + 'BEGIN;' + @rn
                                             + @t + '{{Script}}' + @rn
                                             + 'END;';
@@ -263,3 +277,4 @@ ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
+
