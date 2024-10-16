@@ -429,7 +429,7 @@
         Explanation:
         IndexA.AllColBitmap1 - 0100101001
         IndexB.AllColBitmap1 - 0110111001
-        Differences:           *  *
+        Differences:             *  *
 
         This shows that IndexB has two columns that IndexA does not. In order to figure that out with bitwise operators
         we can first negate the bitmap for IndexA...then we can use a bitwise AND comparison. This allows us to produce
