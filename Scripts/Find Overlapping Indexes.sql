@@ -55,6 +55,7 @@
   - Add list of column differences for mergeable indexes. For now it's just a list of column ID's which isnt very helpful.
   - Should clustered vs nonclustered and/or unique vs non-unique duplicate matches indexes be classified as "duplicate"
     or overlapping? (currently classified as overlapping)
+  - Add support for partitioned indexes and columnstore indexes
 */
 ------------------------------------------------------------------------------
 
