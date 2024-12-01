@@ -221,6 +221,15 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                             AND kc.is_ms_shipped = 0
                         FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                     ))
+                    , [stats] = (
+                        SELECT st.[name], st.user_created, st.auto_created, st.no_recompute, st.has_filter, st.filter_definition, st.is_temporary, st.is_incremental
+						-- TODO: Add sys.stats_columns data
+                        FROM sys.stats st
+                        WHERE st.user_created = 1 -- Limited to only user created index stats to avoid unecessary bloat in this object
+                            AND st.[object_id] = i.[object_id]
+                            AND st.stats_id = i.index_id
+                        FOR JSON AUTO, INCLUDE_NULL_VALUES
+                    )
                     , [extended_properties] = (
                         SELECT ep.[name], ep.[value]
                         FROM sys.extended_properties ep
