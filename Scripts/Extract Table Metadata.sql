@@ -26,7 +26,7 @@
 /* Top level/generic considerations:
     - Remove all columns who have a matching `*_desc` column. No real reason to log and hold onto that data if it's less verbose and duplicated
     - Convert to exclude NULL values, as well as converting default values to null so that they are excluded?
-	  For example: is_padded = 0 is the default value. If this value is technically not configured, then do we need to include it here?
+      For example: is_padded = 0 is the default value. If this value is technically not configured, then do we need to include it here?
 */
 SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
     , ObjectName         = x.[name]
@@ -170,18 +170,20 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                                 FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                             ))
                             */
-                            , [partition_function] = JSON_QUERY((
-                                /* Excluding `fanout` column because it will cause a detected change any time a boundary/partition is added/removed */
-                                SELECT pf.[name], pf.[type], pf.[type_desc] /* , pf.fanout */, pf.boundary_value_on_right, pf.is_system
-                                /* Not including extended properties as they are irrelevant to the status of the table object */
-                                FROM sys.partition_functions pf
-                                WHERE pf.function_id = ps.function_id
+                            , [partition_scheme] = JSON_QUERY((
+                                SELECT [partition_function] = JSON_QUERY((
+                                        /* Excluding `fanout` column because it will cause a detected change any time a boundary/partition is added/removed */
+                                        SELECT pf.[name], pf.[type], pf.[type_desc] /* , pf.fanout */, pf.boundary_value_on_right, pf.is_system
+                                        /* Not including extended properties as they are irrelevant to the status of the table object */
+                                        FROM sys.partition_functions pf
+                                        WHERE pf.function_id = ps.function_id
+                                        FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
+                                    ))
+                                FROM sys.partition_schemes ps
+                                WHERE ps.data_space_id = ds.data_space_id
                                 FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                             ))
                         FROM sys.data_spaces ds
-                            /* Note: sys.partition_schemes doesn't need to be a child object because it doesn't provide any extra
-                               info other than the partition function function_id */
-                            LEFT JOIN sys.partition_schemes ps ON ps.data_space_id = ds.data_space_id
                         WHERE ds.data_space_id = i.data_space_id
                         FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                     ))
