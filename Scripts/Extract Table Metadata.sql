@@ -1,17 +1,15 @@
-/* Rules for consistency:
-    - ID pointer columns (such as schema_id, history_table_id, default_object_id) should be converted to "*_name" columns
+﻿/* Rules for consistency:
+    - ID pointer columns (such as schema_id, index_id) should be converted to "*_name" columns
       UNLESS that object is part of the table definition. AKA, if you drop the table and that object disappears, then its
-      metadata should be included in this snapshot. The only exception to this rule would probably be table triggers because
-      their definitions are often quite large, and we can track triggers in their own separate object.
-
-      If the column is changing to name, then the naming convention should be from "foo_id" to "foo_name". If the item has
-      a schema associated with it, then it should be the fully-qualified name with square brackets and escaping. Otherwise
-      just the name as a string is fine.
+      metadata should be included in this snapshot. An object could also be used for multi-part names, such as [name], [schema_name].
+      The only exception to this rule would probably be table triggers because their definitions are often quite large, and we can
+      track triggers in their own separate object.
 
     - All parent level columns should be kept in original table order, minus excluded columns. Additional properties should
       appended to the end and the `extended_properties` property always goes at the end.
 
     - Typically excluded columns:
+      - object_id, schema_id, index_id, column_id, etc - these can cause false positive change detection due to drop and recreate methods
       - create_date
       - modify_date
       - is_ms_shipped
@@ -27,10 +25,8 @@
 */
 /* Top level/generic considerations:
     - Remove all columns who have a matching `*_desc` column. No real reason to log and hold onto that data if it's less verbose and duplicated
-    - In any case where a child has a name + schema_name, convert it to a combined `[schema_name].[name]` string. The opposite argument
-      being that it would make more sense to keep everything separate in case we ever want to parse and use this data. It would be annoying
-      to have to parse the value and determine schema/name. It probably makes more sense JSON wise, to just have a child object instead
-      of a string.
+    - Convert to exclude NULL values, as well as converting default values to null so that they are excluded?
+	  For example: is_padded = 0 is the default value. If this value is technically not configured, then do we need to include it here?
 */
 SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
     , ObjectName         = x.[name]
@@ -58,7 +54,6 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
             --
             , [columns] = (
                 SELECT c.[name]
-                    , c.column_id /* Consideration: May remove this as it could cause a false change detection if the table is dropped and rebuilt. Instead, we could possibly rely on ordering */
                     , system_type_name = TYPE_NAME(c.system_type_id)
                     , user_type_name = TYPE_NAME(c.user_type_id)
                     , c.max_length, c.[precision], c.scale, c.collation_name, c.is_nullable, c.is_ansi_padded, c.is_rowguidcol, c.is_identity, c.is_computed, c.is_filestream, c.is_replicated, c.is_non_sql_subscribed, c.is_merge_published
@@ -106,7 +101,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                             AND dc.is_ms_shipped = 0
                         FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                     ))
-                    , [check_constraints] = ( -- yes, a column can have more than 1 check constraint
+                    , [check_constraints] = ( /* yes, a column can have more than 1 check constraint */
                         SELECT cc.[name], [schema_name] = SCHEMA_NAME(cc.[schema_id])
                             , cc.is_published, cc.is_schema_published, cc.is_disabled, cc.is_not_for_replication, cc.is_not_trusted
                             , parent_column_name = COL_NAME(cc.parent_object_id, cc.parent_column_id)
@@ -166,16 +161,19 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                         definition of the trigger.
                     */
                     , [data_space] = JSON_QUERY((
-                        SELECT ds.[name], ds.[type], ds.[type_desc]--, ds.is_default, ds.is_system
-                          -- , [filegroup] = JSON_QUERY((
-                          --     SELECT fg.filegroup_guid, fg.log_filegroup_id, fg.is_read_only, fg.is_autogrow_all_files
-                          --     FROM sys.filegroups fg
-                          --     WHERE fg.data_space_id = ds.data_space_id
-                          --     FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
-                          -- ))
+                        SELECT ds.[name], ds.[type], ds.[type_desc] /* , ds.is_default, ds.is_system */
+                            /* -- Not including filegroup info as these properties are not directly related to a table change
+                            , [filegroup] = JSON_QUERY((
+                                SELECT fg.filegroup_guid, fg.log_filegroup_id, fg.is_read_only, fg.is_autogrow_all_files
+                                FROM sys.filegroups fg
+                                WHERE fg.data_space_id = ds.data_space_id
+                                FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
+                            ))
+                            */
                             , [partition_function] = JSON_QUERY((
-                                SELECT pf.[name], pf.[type], pf.[type_desc]--, pf.fanout, pf.boundary_value_on_right, pf.is_system
-                                -- Not including extended properties as they are irrelevant to the status of the table object
+                                /* Excluding `fanout` column because it will cause a detected change any time a boundary/partition is added/removed */
+                                SELECT pf.[name], pf.[type], pf.[type_desc] /* , pf.fanout */, pf.boundary_value_on_right, pf.is_system
+                                /* Not including extended properties as they are irrelevant to the status of the table object */
                                 FROM sys.partition_functions pf
                                 WHERE pf.function_id = ps.function_id
                                 FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
@@ -201,7 +199,15 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                         ORDER BY ic.key_ordinal, ic.index_column_id
                         FOR JSON AUTO, INCLUDE_NULL_VALUES
                     )
-                    -- TODO: Add partitions - need to figure out how to write query that collapses partitions by number range
+                    , [partitions] = (
+                        /* For now, just list all partitions, but in the future may be better to somehow group them? AKA: 1, 2 TO 20, 21 TO 43 */
+                        SELECT partition_number, filestream_filegroup_id, [data_compression], data_compression_desc
+                        FROM sys.partitions ixp
+                        WHERE ixp.[object_id] = i.[object_id]
+                            AND ixp.index_id = i.index_id
+                        ORDER BY ixp.partition_number
+                        FOR JSON AUTO, INCLUDE_NULL_VALUES
+                    )
                     , [key_constraint] = JSON_QUERY((
                         SELECT kc.[name], [schema_name] = SCHEMA_NAME(kc.[schema_id])
                             , kc.[type], kc.[type_desc], kc.is_published, kc.is_schema_published, kc.is_system_named, kc.is_enforced
@@ -221,15 +227,13 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                             AND kc.is_ms_shipped = 0
                         FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                     ))
-                    , [stats] = (
-                        SELECT st.[name], st.user_created, st.auto_created, st.no_recompute, st.has_filter, st.filter_definition, st.is_temporary, st.is_incremental
-						-- TODO: Add sys.stats_columns data
-                        FROM sys.stats st
-                        WHERE st.user_created = 1 -- Limited to only user created index stats to avoid unecessary bloat in this object
-                            AND st.[object_id] = i.[object_id]
-                            AND st.stats_id = i.index_id
-                        FOR JSON AUTO, INCLUDE_NULL_VALUES
-                    )
+                    , [hash_index] = JSON_QUERY((
+                        SELECT ixhi.[bucket_count]
+                        FROM sys.hash_indexes ixhi
+                        WHERE ixhi.[object_id] = i.[object_id]
+                            AND ixhi.index_id = i.index_id
+                        FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
+                    ))
                     , [extended_properties] = (
                         SELECT ep.[name], ep.[value]
                         FROM sys.extended_properties ep
@@ -242,6 +246,23 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                 FROM sys.indexes i
                 WHERE i.[object_id] = t.[object_id]
                 ORDER BY i.[name]
+                FOR JSON AUTO, INCLUDE_NULL_VALUES
+            )
+            , [stats] = (
+                /* Placed at the table level because we are only listing custom / user-created stats, which would not have an index record associated with it */
+                SELECT st.[name], st.user_created, st.auto_created, st.no_recompute, st.has_filter, st.filter_definition, st.is_temporary, st.is_incremental
+                    , [stats_columns] = (
+                        SELECT stc.stats_column_id, column_name = COL_NAME(stc.[object_id], stc.column_id)
+                        FROM sys.stats_columns stc
+                        WHERE stc.[object_id] = st.[object_id]
+                            AND stc.stats_id = st.stats_id
+                        ORDER BY stc.stats_column_id
+                        FOR JSON AUTO, INCLUDE_NULL_VALUES
+                    )
+                FROM sys.stats st
+                WHERE st.user_created = 1 /* Limited to only user created index stats to avoid unecessary bloat in this object */
+                    AND st.[object_id] = t.[object_id]
+                ORDER BY st.[name]
                 FOR JSON AUTO, INCLUDE_NULL_VALUES
             )
             , [check_constraints] = (
@@ -274,7 +295,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                             AND fkro.is_ms_shipped = 0
                         FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                     ))
-                    , key_index_name = NULLIF(fki.[name],'') -- hack to prevent JSON serialization from placing value in a sub-object
+                    , key_index_name = NULLIF(fki.[name],'') /* hack to prevent JSON serialization from placing value in a sub-object */
                     , fk.is_disabled, fk.is_not_for_replication, fk.is_not_trusted, fk.delete_referential_action, fk.delete_referential_action_desc, fk.update_referential_action, fk.update_referential_action_desc, fk.is_system_named
                     --
                     , [foreign_key_columns] = (
@@ -308,6 +329,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                     , end_column_name = COL_NAME(per.[object_id], per.end_column_id)
                 FROM sys.periods per
                 WHERE per.[object_id] = t.[object_id]
+                ORDER BY per.[period_type]
                 FOR JSON AUTO, INCLUDE_NULL_VALUES
             )
             , [triggers] = (
