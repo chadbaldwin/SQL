@@ -39,10 +39,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
             , [schema_name] = SCHEMA_NAME(t.[schema_id])
             , t.[type], t.[type_desc], t.is_published, t.is_schema_published
             , t.lob_data_space_id, t.filestream_data_space_id /* Consideration: Possibly convert these over to names or objects? */
-            , t.max_column_id_used /* Consideration: May remove this as it could cause a false change detection if the table is dropped and rebuilt */
-            , t.lock_on_bulk_load, t.uses_ansi_nulls, t.is_replicated, t.has_replication_filter
-            , t.is_merge_published, t.is_sync_tran_subscribed, t.has_unchecked_assembly_data, t.text_in_row_limit, t.large_value_types_out_of_row, t.is_tracked_by_cdc, t.[lock_escalation], t.lock_escalation_desc, t.is_filetable
-            , t.is_memory_optimized, t.[durability], t.durability_desc, t.temporal_type, t.temporal_type_desc
+            , t.lock_on_bulk_load, t.uses_ansi_nulls, t.is_replicated, t.has_replication_filter, t.is_merge_published, t.is_sync_tran_subscribed, t.has_unchecked_assembly_data, t.text_in_row_limit, t.large_value_types_out_of_row, t.is_tracked_by_cdc, t.[lock_escalation], t.lock_escalation_desc, t.is_filetable, t.is_memory_optimized, t.[durability], t.durability_desc, t.temporal_type, t.temporal_type_desc
             , [history_table] = JSON_QUERY((
                 SELECT ht.[name], [schema_name] = SCHEMA_NAME(ht.[schema_id]), ht.[type], ht.[type_desc]
                 FROM sys.tables ht
