@@ -228,16 +228,20 @@ END;
 RAISERROR('Add exists checks',0,1) WITH NOWAIT;
 IF (@ScriptExistsCheck = 1)
 BEGIN;
-    DECLARE @SqlIfNotExists nvarchar(MAX) = 'IF (OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL' + @rn
-                                            + @t + 'AND INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL' + @rn
-                                            + ')' + @rn
-                                            + 'BEGIN;' + @rn
-                                            + @t + '{{Script}}' + @rn
-                                            + 'END;',
-            @SqlIfExists    nvarchar(MAX) = 'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)' + @rn
-                                            + 'BEGIN;' + @rn
-                                            + @t + '{{Script}}' + @rn
-                                            + 'END;';
+    DECLARE @SqlIfNotExists nvarchar(MAX) = CONCAT_WS(@rn,
+                                            'IF (OBJECT_ID(N''{{Schema}}.{{Object}}'', ''{{ObjectTypeCode}}'') IS NOT NULL',
+                                            @t + 'AND INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NULL',
+                                            ')',
+                                            'BEGIN;',
+                                            @t + '{{Script}}',
+                                            'END;'
+                                        ),
+            @SqlIfExists    nvarchar(MAX) = CONCAT_WS(@rn,
+                                            'IF (INDEXPROPERTY(OBJECT_ID(N''{{Schema}}.{{Object}}''), N''{{Index}}'', ''IndexId'') IS NOT NULL)',
+                                            'BEGIN;',
+                                            @t + '{{Script}}',
+                                            'END;'
+                                        );
 
     UPDATE o
     SET o.CreateScript  = REPLACE(x.IfNotExists, '{{Script}}', REPLACE(o.CreateScript , @rn, @rn + @t)),
