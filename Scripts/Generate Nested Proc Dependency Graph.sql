@@ -17,10 +17,12 @@ FROM sys.objects o
 WHERE o.is_ms_shipped = 0
     AND o.[type] = 'P'
     --
-    AND o.[object_id] IN (
-        OBJECT_ID('dbo.usp_MyProc'),
-        OBJECT_ID('dbo.usp_MyOtherProc')
-    )
+	AND o.[object_id] IN (
+		OBJECT_ID('Report.DBDashAll'),
+		OBJECT_ID('dbo.PurgeData'),
+		OBJECT_ID('Alert.Alerts_Upd'),
+		OBJECT_ID('dbo.PerformanceCounters_Upd')
+	)
 ----------------------------------------------------------------------
 
 ----------------------------------------------------------------------
