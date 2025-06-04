@@ -8,7 +8,7 @@ FROM sys.dm_exec_sessions s
     LEFT JOIN sys.dm_exec_requests r ON r.[session_id] = s.[session_id]
 
 DECLARE @crlf char(2) = CHAR(13) + CHAR(10);
-DECLARE @template nvarchar(MAX) = CONCAT_WS(@crlf, 'digraph G {','rankdir=LR','node[shape=Mrecord, fontfamily="Consolas"]','{{data}}','}');
+DECLARE @template nvarchar(MAX) = CONCAT_WS(@crlf, 'digraph G {','rankdir=LR','node[shape=Mrecord, fontname="Consolas"]','{{data}}','}');
 
 DECLARE @data nvarchar(MAX);
 SELECT @data = CONCAT(STRING_AGG(CONVERT(nvarchar(MAX), x.nodes), @crlf), @crlf, STRING_AGG(CONVERT(nvarchar(MAX), x.edges), @crlf))
