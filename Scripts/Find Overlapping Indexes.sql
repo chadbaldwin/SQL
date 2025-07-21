@@ -257,7 +257,7 @@
     ), cte_clst_keys AS (
         SELECT ti.[object_id]
             /*  Clustering keys */
-            ,  ClstKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.ClstKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+            ,  ClstKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.ClstKeyColID                             , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
             ,  ClstKeyCols    = STRING_AGG(CONVERT(nvarchar(MAX), n.ClstKeyColName + IIF(ic.is_descending_key = 1, ' DESC', '')), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
         FROM #target_indexes ti
             JOIN #idx_cols ic ON ic.[object_id] = ti.[object_id] AND ic.index_id = ti.index_id
@@ -269,13 +269,13 @@
     ), cte_idx_cols AS (
         SELECT ic.[object_id], ic.index_id
             /*  Defined index structure */
-            ,  OrigKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.OrigKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-            ,  OrigInclColIDs = STRING_AGG(id.OrigInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+            ,  OrigKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.OrigKeyColID                             , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+            ,  OrigInclColIDs = STRING_AGG(id.OrigInclColID                                                                     , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
             ,  OrigKeyCols    = STRING_AGG(CONVERT(nvarchar(MAX), n.OrigKeyColName + IIF(ic.is_descending_key = 1, ' DESC', '')), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
             ,  OrigInclCols   = STRING_AGG(CONVERT(nvarchar(MAX), n.OrigInclColName + ' ' + ic.data_type_text                  ), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
             /*  Physical index structure */
-            ,  PhysKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.PhysKeyColID     , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
-            ,  PhysInclColIDs = STRING_AGG(id.PhysInclColID                                             , ','  ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+            ,  PhysKeyColIDs  = STRING_AGG(IIF(ic.is_descending_key = 1, '-', '') + id.PhysKeyColID                             , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
+            ,  PhysInclColIDs = STRING_AGG(id.PhysInclColID                                                                     , ',' ) WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)+','
             ,  PhysKeyCols    = STRING_AGG(CONVERT(nvarchar(MAX), n.PhysKeyColName + IIF(ic.is_descending_key = 1, ' DESC', '')), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
             ,  PhysInclCols   = STRING_AGG(CONVERT(nvarchar(MAX), n.PhysInclColName + ' ' + ic.data_type_text                  ), ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, ic.column_id)
         --INTO #idx_collapse
