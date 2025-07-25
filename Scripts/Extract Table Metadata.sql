@@ -46,7 +46,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
             , [history_table] = JSON_QUERY((
                 SELECT ht.[name], [schema_name] = SCHEMA_NAME(ht.[schema_id]), ht.[type], ht.[type_desc]
                 FROM sys.tables ht
-                WHERE ht.[object_id] = t.[object_id]
+                WHERE ht.[object_id] = t.history_table_id
                     AND ht.is_ms_shipped = 0
                 FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
             ))
