@@ -130,18 +130,16 @@ BEGIN;
         AND c.[session_id] <> @@SPID -- Exclude self
         AND s.[status] NOT IN ('background','sleeping')
         AND r.[status] NOT IN ('background','sleeping')
---
--- Customize filters to identify the session you want to target
         AND s.login_name NOT IN ('NT AUTHORITY\SYSTEM','sa')
---      AND COALESCE(st_ph.[text], st_sh.[text]) NOT IN ('xp_cmdshell','xp_backup_log','xp_backup_database')
---      AND r.[command] NOT IN ('BACKUP LOG','WAITFOR','UPDATE STATISTICS','RESTORE HEADERONLY','DBCC')
---      AND c.[session_id] = 2839
---      AND r.command LIKE 'UPDATE%' -- command/action is an update statement
-        AND r.total_elapsed_time > 15000 -- running for at least N seconds
---      AND r.blocking_session_id <> 0 -- is blocked
+        AND COALESCE(st_ph.[text], st_sh.[text]) NOT IN ('xp_cmdshell','xp_backup_log','xp_backup_database')
+        AND r.[command] NOT IN ('BACKUP LOG','WAITFOR','UPDATE STATISTICS','RESTORE HEADERONLY','DBCC')
+        AND r.total_elapsed_time > 3000 -- Minimum runtime - Who cares about stuff running for <3 seconds? I mean, you should, but not for this script
+        ----------------------------------------------------------
+        AND r.blocking_session_id <> 0 -- is blocked
 --      AND r.blocking_session_id = 0 -- not blocked
-        AND EXISTS (SELECT * FROM sys.dm_exec_requests br WHERE br.blocking_session_id = r.[session_id]) -- is blocking
-    --  AND x.query_plan.exist('//Update/Object[lower-case(string(@Table))=("[table_name_1]","[table_name_2]")]') = 1 -- work in progress, doesn't _always_ work
+--      AND EXISTS (SELECT * FROM sys.dm_exec_requests br WHERE br.blocking_session_id = r.[session_id]) -- is blocking
+--      AND r.command LIKE 'UPDATE%' -- command/action is an update statement
+--      AND r.total_elapsed_time > 15000 -- running for at least N seconds
     ORDER BY r.total_elapsed_time DESC;
 
     IF (@session_id IS NULL)
@@ -220,6 +218,7 @@ BEGIN;
     IF EXISTS (SELECT * FROM #dm_exec_requests) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_requests')+N'█', * FROM #dm_exec_requests; END;
     RAISERROR('#dm_exec_requests',0,1) WITH NOWAIT;
 
+    -- TODO: Consider using dynamic SQL to grab cross database object info? Similar to how DBADash handles it.
     IF (@blocking_session_id IS NOT NULL) --AND 1=0
     BEGIN;
         SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_requests - blocked by')+N'█', x.*, y.*, N'█' [█]
@@ -317,17 +316,17 @@ BEGIN;
         , sql_text = (SELECT [processing-instruction(query)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, x.sql_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
         , y.query_plan_xml, x.query_plan_text, x.[description]
         , plan_stmt_count = y.query_plan_xml.value('count(/ShowPlanXML/BatchSequence/Batch/Statements/*)', 'int')
-        , missing_idx_count = y.query_plan_xml.value('count(/ShowPlanXML/BatchSequence/Batch/Statements/*//MissingIndex)', 'int')
+        , missing_idx_count = y.query_plan_xml.value('count(/ShowPlanXML/BatchSequence/Batch/Statements/*//MissingIndex)', 'int') -- TODO: Dedup count - Currently counts all missing, even if index suggestion is duplicated.
         , statement_text = (SELECT [processing-instruction(query)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, st.statement_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
     INTO #dm_exec_plan_and_text
     FROM (
-              SELECT dmv = 'sys.dm_exec_sql_text(@plan_handle)'                 , st.[dbid], st.objectid, st.[encrypted], sql_text = st.[text]  , query_plan_xml = NULL                                 , query_plan_text = NULL            , [description] = 'Returns the text of the SQL batch that is identified by the specified sql_handle.' FROM sys.dm_exec_sql_text(@plan_handle) st
-        UNION SELECT dmv = 'sys.dm_exec_sql_text(@sql_handle)'                  , st.[dbid], st.objectid, st.[encrypted], sql_text = st.[text]  , query_plan_xml = NULL                                 , query_plan_text = NULL            , [description] = 'Returns the text of the SQL batch that is identified by the specified sql_handle.' FROM sys.dm_exec_sql_text(@sql_handle) st
-        UNION SELECT dmv = 'sys.dm_exec_query_plan(@plan_handle)'               , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL       , query_plan_xml = CONVERT(nvarchar(MAX), st.query_plan), query_plan_text = NULL            , [description] = 'Returns the Showplan in XML format for the batch specified by the plan handle.' FROM sys.dm_exec_query_plan(@plan_handle) st
-        UNION SELECT dmv = 'sys.dm_exec_query_plan_stats(@plan_handle)'         , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL       , query_plan_xml = CONVERT(nvarchar(MAX), st.query_plan), query_plan_text = NULL            , [description] = 'Returns the equivalent of the last known actual execution plan for a previously cached query plan.' FROM sys.dm_exec_query_plan_stats(@plan_handle) st
-        UNION SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle)'          , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL       , query_plan_xml = st.query_plan                        , query_plan_text = st.query_plan   , [description] = 'Returns the Showplan in text format for a Transact-SQL batch or for a specific statement within the batch.' FROM sys.dm_exec_text_query_plan(@plan_handle, @stmt_start, @stmt_end) st
-        UNION SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle, 0, -1)'   , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL       , query_plan_xml = st.query_plan                        , query_plan_text = st.query_plan   , [description] = 'Returns the Showplan in text format for a Transact-SQL batch or for a specific statement within the batch.' FROM sys.dm_exec_text_query_plan(@plan_handle, 0, -1) st
-        UNION SELECT dmv = 'sys.dm_exec_query_statistics_xml(@session_id)'      , NULL     , NULL       , NULL          , sql_text = NULL       , query_plan_xml = CONVERT(nvarchar(MAX), st.query_plan), query_plan_text = NULL            , [description] = 'Returns query execution plan for in-flight requests.' FROM sys.dm_exec_query_statistics_xml(@session_id) st
+              SELECT dmv = 'sys.dm_exec_sql_text(@plan_handle)'              , st.[dbid], st.objectid, st.[encrypted], sql_text = st.[text], query_plan_xml = NULL                                 , query_plan_text = NULL         , [description] = 'Returns the text of the SQL batch that is identified by the specified sql_handle.' FROM sys.dm_exec_sql_text(@plan_handle) st
+        UNION SELECT dmv = 'sys.dm_exec_sql_text(@sql_handle)'               , st.[dbid], st.objectid, st.[encrypted], sql_text = st.[text], query_plan_xml = NULL                                 , query_plan_text = NULL         , [description] = 'Returns the text of the SQL batch that is identified by the specified sql_handle.' FROM sys.dm_exec_sql_text(@sql_handle) st
+        UNION SELECT dmv = 'sys.dm_exec_query_plan(@plan_handle)'            , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL     , query_plan_xml = CONVERT(nvarchar(MAX), st.query_plan), query_plan_text = NULL         , [description] = 'Returns the Showplan in XML format for the batch specified by the plan handle.' FROM sys.dm_exec_query_plan(@plan_handle) st
+        UNION SELECT dmv = 'sys.dm_exec_query_plan_stats(@plan_handle)'      , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL     , query_plan_xml = CONVERT(nvarchar(MAX), st.query_plan), query_plan_text = NULL         , [description] = 'Returns the equivalent of the last known actual execution plan for a previously cached query plan.' FROM sys.dm_exec_query_plan_stats(@plan_handle) st
+        UNION SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle)'       , st.[dbid], st.objectid, st.[encrypted], sql_text = NULL     , query_plan_xml = st.query_plan                        , query_plan_text = st.query_plan, [description] = 'Returns the Showplan in text format for a Transact-SQL batch or for a specific statement within the batch.' FROM sys.dm_exec_text_query_plan(@plan_handle, @stmt_start, @stmt_end) st
+        UNION SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle, 0, -1)', st.[dbid], st.objectid, st.[encrypted], sql_text = NULL     , query_plan_xml = st.query_plan                        , query_plan_text = st.query_plan, [description] = 'Returns the Showplan in text format for a Transact-SQL batch or for a specific statement within the batch.' FROM sys.dm_exec_text_query_plan(@plan_handle, 0, -1) st
+        UNION SELECT dmv = 'sys.dm_exec_query_statistics_xml(@session_id)'   , NULL     , NULL       , NULL          , sql_text = NULL     , query_plan_xml = CONVERT(nvarchar(MAX), st.query_plan), query_plan_text = NULL         , [description] = 'Returns query execution plan for in-flight requests.' FROM sys.dm_exec_query_statistics_xml(@session_id) st
     ) x
         CROSS APPLY (SELECT query_plan_xml = TRY_CONVERT(xml, x.query_plan_xml)) y
         CROSS APPLY (SELECT statement_text = SUBSTRING(x.sql_text, @stmt_start/2+1, IIF(@stmt_end = -1, DATALENGTH(x.sql_text), (@stmt_end-@stmt_start)/2+1))) st;
@@ -386,6 +385,7 @@ BEGIN;
     IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_plan_feedback - by plan_id')+N'█', * FROM #query_store_plan_feedback; END;
     RAISERROR('#query_store_plan_feedback',0,1) WITH NOWAIT;
 
+    -- TODO: Convert to temp table pattern
     SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_tuning_recommendations')+N'█'
         , x.query_id, x.regressed_plan_id, x.last_good_plan_id
         , N'█' [█], tr.*
@@ -421,7 +421,7 @@ BEGIN;
             , [off] = IIF(x.statement_start_offset = @stmt_start AND x.statement_end_offset = @stmt_end, N'☑️', '')
             , N'█' [█]
                 , statement_text = (SELECT [processing-instruction(query)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, stt.statement_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
-                , avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000.0,'0#'), ' ', FORMAT(DATEADD(MILLISECOND, x.total_elapsed_time/(x.execution_count*1.0), 0),'HH:mm:ss.fff'))
+                , avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000.0,'0#'), ' ', FORMAT(DATEADD(MILLISECOND, x.total_elapsed_time/(x.execution_count*1.0), 0),'HH:mm:ss.fff')) -- TODO: Validate accuracy - Finding this to be inaccurate fairly often due to "incorrect" execution counts (too low)
                 , avg_grant_mb = CONVERT(decimal(15,3), x.total_grant_kb / x.execution_count / 1024.0)
             , N'█' [█], x.*
         FROM #dm_exec_query_stats x
@@ -535,6 +535,7 @@ BEGIN;
     IF EXISTS (SELECT * FROM #dm_tran_active_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_active_transactions')+N'█', * FROM #dm_tran_active_transactions; END;
     RAISERROR('#dm_tran_active_transactions',0,1) WITH NOWAIT;
 
+    -- TODO: Is the column listing here really necessary just to remove "database_transaction_" prefix to make result set narrower?
     SELECT transaction_id, database_id
         , begin_time                = database_transaction_begin_time
         , [type]                    = database_transaction_type
@@ -593,33 +594,33 @@ BEGIN;
     END;
 
     SELECT wait_type, waiting_tasks_count, wait_time_ms, max_wait_time_ms, signal_wait_time_ms
-        , [description] = CASE
-            WHEN wait_type LIKE 'PAGELATCH[_]%' THEN 'Accessing pages in memory'
-            WHEN wait_type LIKE 'PAGEIOLATCH[_]%' THEN 'Pulling pages from disk into memory buffers'
-            WHEN wait_type = 'WRITELOG' THEN 'Waiting for a TX log writes to flush to disk'
-            WHEN wait_type = 'WAITFOR' THEN 'Result of a WAITFOR statement'
-            WHEN wait_type = 'LCK_M_IX' THEN 'Waiting to acquire an Intent Exclusive lock on a resource'
-            WHEN wait_type = 'WAIT_ON_SYNC_STATISTICS_REFRESH' THEN 'Waiting for synchronous statistics update to complete before query compilation and execution can resume.'
-            WHEN wait_type = 'PREEMPTIVE_OS_PIPEOPS' THEN 'Waiting on OS / Windows - e.g. xp_cmdshell'
-            WHEN wait_type = 'PREEMPTIVE_OS_QUERYREGISTRY' THEN 'Waiting on OS / Windows registry - e.g. xp_regread, sys.dm_server_registry'
-            WHEN wait_type IN ('CXCONSUMER','CXPACKET','CXSYNC_PORT','CXSYNC_CONSUMER','CXROWSET_SYNC') THEN 'Query parallelism - Not necessarily bad, unless excessive'
-            WHEN wait_type = 'LATCH_EX' THEN 'Waiting to obtain an exclusive latch on a non-page memory structure'
-            WHEN wait_type = 'SLEEP_TASK' THEN 'Task is sleeping while waiting for a generic event to occur.'
-            WHEN wait_type = 'LOGMGR_FLUSH' THEN 'Waiting for the current log flush to complete'
-            -- Batch-Mode
-            WHEN wait_type = 'BPSORT' THEN 'Batch-Mode - Thread is involved in a batch-mode sort'
-            WHEN wait_type = 'HTBUILD' THEN 'Batch-Mode - Synchronizing the building of the hash table on the input side of a hash join/aggregation'
-            WHEN wait_type = 'HTREPARTITION' THEN 'Batch-Mode - Synchronizing the repartitioning of the hash table on the input side of a hash join/aggregation'
-            WHEN wait_type = 'HTDELETE' THEN 'Batch-Mode - Synchronizing at the end of a hash join/aggregation.'
-            WHEN wait_type = 'HTMEMO' THEN 'Batch-Mode - Synchronizing before scanning hash table to output matches / non-matches in hash join/aggregation'
-            WHEN wait_type = 'HTREINIT' THEN 'Batch-Mode - Synchronizing before resetting a hash join/aggregation for the next partial join'
-            WHEN wait_type = 'BMPALLOCATION' THEN 'Batch-Mode - Synchronizing the allocation of a large bitmap filter'
-            WHEN wait_type = 'BMPBUILD' THEN 'Batch-Mode - Synchronizing the building of a large bitmap filter'
-            WHEN wait_type = 'BMPREPARTITION' THEN 'Batch-Mode - Synchronizing the repartitioning of a large bitmap filter'
-            --
-            WHEN wait_type = 'PWAIT_QRY_BPMEMORY' THEN 'Internal use only'
-            ELSE NULL
-        END
+        , [description] = CASE -- TODO: Lots of unecessary duplicate work when many existing scripts and tools provide this - Can we pull from those tools/repos? Or keep this going because I prefer different descriptions?
+							WHEN wait_type LIKE 'PAGELATCH[_]%' THEN 'Accessing pages in memory'
+							WHEN wait_type LIKE 'PAGEIOLATCH[_]%' THEN 'Pulling pages from disk into memory buffers'
+							WHEN wait_type = 'WRITELOG' THEN 'Waiting for a TX log writes to flush to disk'
+							WHEN wait_type = 'WAITFOR' THEN 'Result of a WAITFOR statement'
+							WHEN wait_type = 'LCK_M_IX' THEN 'Waiting to acquire an Intent Exclusive lock on a resource'
+							WHEN wait_type = 'WAIT_ON_SYNC_STATISTICS_REFRESH' THEN 'Waiting for synchronous statistics update to complete before query compilation and execution can resume.'
+							WHEN wait_type = 'PREEMPTIVE_OS_PIPEOPS' THEN 'Waiting on OS / Windows - e.g. xp_cmdshell'
+							WHEN wait_type = 'PREEMPTIVE_OS_QUERYREGISTRY' THEN 'Waiting on OS / Windows registry - e.g. xp_regread, sys.dm_server_registry'
+							WHEN wait_type IN ('CXCONSUMER','CXPACKET','CXSYNC_PORT','CXSYNC_CONSUMER','CXROWSET_SYNC') THEN 'Query parallelism - Not necessarily bad, unless excessive'
+							WHEN wait_type = 'LATCH_EX' THEN 'Waiting to obtain an exclusive latch on a non-page memory structure'
+							WHEN wait_type = 'SLEEP_TASK' THEN 'Task is sleeping while waiting for a generic event to occur.'
+							WHEN wait_type = 'LOGMGR_FLUSH' THEN 'Waiting for the current log flush to complete'
+							-- Batch-Mode
+							WHEN wait_type = 'BPSORT' THEN 'Batch-Mode - Thread is involved in a batch-mode sort'
+							WHEN wait_type = 'HTBUILD' THEN 'Batch-Mode - Synchronizing the building of the hash table on the input side of a hash join/aggregation'
+							WHEN wait_type = 'HTREPARTITION' THEN 'Batch-Mode - Synchronizing the repartitioning of the hash table on the input side of a hash join/aggregation'
+							WHEN wait_type = 'HTDELETE' THEN 'Batch-Mode - Synchronizing at the end of a hash join/aggregation.'
+							WHEN wait_type = 'HTMEMO' THEN 'Batch-Mode - Synchronizing before scanning hash table to output matches / non-matches in hash join/aggregation'
+							WHEN wait_type = 'HTREINIT' THEN 'Batch-Mode - Synchronizing before resetting a hash join/aggregation for the next partial join'
+							WHEN wait_type = 'BMPALLOCATION' THEN 'Batch-Mode - Synchronizing the allocation of a large bitmap filter'
+							WHEN wait_type = 'BMPBUILD' THEN 'Batch-Mode - Synchronizing the building of a large bitmap filter'
+							WHEN wait_type = 'BMPREPARTITION' THEN 'Batch-Mode - Synchronizing the repartitioning of a large bitmap filter'
+							--
+							WHEN wait_type = 'PWAIT_QRY_BPMEMORY' THEN 'Internal use only'
+							ELSE NULL
+						END
     INTO #dm_exec_session_wait_stats
     FROM sys.dm_exec_session_wait_stats WHERE [session_id] = @session_id;
     IF EXISTS (SELECT * FROM #dm_exec_session_wait_stats) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_session_wait_stats')+N'█', * FROM #dm_exec_session_wait_stats ORDER BY wait_time_ms DESC; END;
