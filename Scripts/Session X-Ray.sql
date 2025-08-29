@@ -72,9 +72,25 @@ BEGIN;
 	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME());
 
 	DECLARE @template nvarchar(2047);
-	SELECT @template = CONCAT_WS(' ', @msg, '['+NULLIF(CONCAT_WS('; ', FORMAT(@duration_ms,'N0')+' ms', FORMAT(@rc,'N0')+' rows'),'')+']')
+	SELECT @template = CONCAT_WS(' ', @msg, '['+NULLIF(CONCAT_WS('; ', FORMAT(@duration_ms,'N0')+' ms', FORMAT(@rc,'N0')+' rows'),'')+']');
 
 	RAISERROR(@template,0,1) WITH NOWAIT;
+END;
+------------------------------------------------------------
+GO
+------------------------------------------------------------
+CREATE OR ALTER PROC #section (
+	@name nvarchar(50)
+)
+AS
+BEGIN;
+	-- The length of 50 is used because that's the max auto-adjust column width in SSMS grid results
+	DECLARE @pad nvarchar(50) = SPACE(25-LEN(@name)/2),
+			@full_bar nvarchar(50) = REPLICATE(N'█', 50);
+
+				SELECT [ ] = @full_bar, [ ] = @full_bar , [ ] = @full_bar
+	UNION ALL	SELECT [ ] = @full_bar, [ ] = @pad+@name, [ ] = @full_bar
+	UNION ALL	SELECT [ ] = @full_bar, [ ] = @full_bar , [ ] = @full_bar;
 END;
 ------------------------------------------------------------
 GO
@@ -273,7 +289,7 @@ END;
 
 ------------------------------------------------------------
 DECLARE @main_dt datetime2 = SYSUTCDATETIME();
-EXEC #log N'Starting volatile data captures'
+EXEC #log N'Starting volatile data captures';
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -611,10 +627,10 @@ DECLARE @output_ts datetime2 = SYSUTCDATETIME();
 BEGIN;
 	DECLARE @xml_replace nvarchar(30) = 0x0000010002000300040005000600070008000B000C000E000F00010010001100120013001400150016001700180019001A001B001C001D001E001F00, -- NCHAR's 0-31 (excluding CR, LF, TAB)
 			@crlf nchar(2) = NCHAR(13)+NCHAR(10);
-
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'     Variables'     , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	------------------------------------------------------------
+	
+	------------------------------------------------------------
+	EXEC #section 'Variables';
 
 	SELECT run_time, [session_id], request_id, transaction_id, stmt_start, stmt_end, page_resource, command FROM #variables;
 	SELECT 'Handles and hashes', plan_handle, [sql_handle], stmt_sql_handle, query_hash, plan_hash FROM #variables;
@@ -624,10 +640,10 @@ BEGIN;
 		, statement_text	= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, v.statement_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
 	FROM #variables v;
 	SELECT 'Object info', [db_id], [object_id], [database_name], [schema_name], [object_name] FROM #variables;
-
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N' Session / Request' , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	------------------------------------------------------------
+	
+	------------------------------------------------------------
+	EXEC #section 'Session / Request';
 
 	IF EXISTS (SELECT * FROM #dm_exec_connections) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_connections')+N'█', * FROM #dm_exec_connections; END;
 	IF EXISTS (SELECT * FROM #dm_exec_sessions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_sessions')+N'█', * FROM #dm_exec_sessions; END;
@@ -643,9 +659,7 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'Query plan and text', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Query plan and text';
 
 	IF EXISTS (SELECT * FROM #dm_exec_input_buffer) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_input_buffer')+N'█', * FROM #dm_exec_input_buffer; END;
 	IF EXISTS (SELECT * FROM #dm_exec_plan_and_text)
@@ -692,9 +706,7 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'    Query Store'    , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Query Store';
 
 	IF EXISTS (SELECT * FROM #qs_variables WHERE query_id IS NOT NULL AND plan_id IS NOT NULL)
 	BEGIN;
@@ -772,9 +784,7 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'    Stats views'    , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Stats views';
 
 	IF EXISTS (SELECT * FROM #dm_exec_query_stats)
 	BEGIN;
@@ -816,9 +826,7 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'        Misc'       , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Misc';
 
 	IF EXISTS (SELECT * FROM #dm_db_session_space_usage) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_session_space_usage')+N'█', * FROM #dm_db_session_space_usage; END;
 	IF EXISTS (SELECT * FROM #dm_db_task_space_usage) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_task_space_usage')+N'█', * FROM #dm_db_task_space_usage ORDER BY exec_context_id; END;
@@ -840,9 +848,7 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N' Transaction info'  , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Transaction info';
 
 	IF EXISTS (SELECT * FROM #dm_tran_session_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_session_transactions')+N'█', * FROM #dm_tran_session_transactions; END;
 	IF EXISTS (SELECT * FROM #dm_tran_active_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_active_transactions')+N'█', * FROM #dm_tran_active_transactions; END;
@@ -851,9 +857,7 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'  Locks and waits'  , [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Locks and waits';
 
 	IF (OBJECT_ID('tempdb..#dm_db_page_info') IS NOT NULL)
 	BEGIN;
@@ -963,9 +967,8 @@ BEGIN;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
-				SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'    Latest plans   ', [ ] = N'██████████████████████████████████████████████████'
-	UNION ALL	SELECT [ ] = N'██████████████████████████████████████████████████', [ ] = N'███████████████████', [ ] = N'██████████████████████████████████████████████████';
+	EXEC #section 'Latest plans';
+
 	IF (OBJECT_ID('tempdb..#dm_exec_query_plan_stats') IS NOT NULL)
 	BEGIN;
 		IF EXISTS (SELECT * FROM #dm_exec_query_plan_stats)
