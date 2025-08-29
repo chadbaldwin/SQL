@@ -95,6 +95,15 @@ END;
 ------------------------------------------------------------
 GO
 ------------------------------------------------------------
+IF (OBJECT_ID('tempdb..#variables') IS NOT NULL)
+BEGIN;
+	DECLARE @errormsg nvarchar(1000) = 'There is already data captured in the tables, existing data was returned instead.'
+					+CHAR(13)+CHAR(10)+'IF you want to clear and re-run, then run this to reset:'
+					+CHAR(13)+CHAR(10)
+					+CHAR(13)+CHAR(10)+'DROP TABLE #variables;';
+	THROW 51000, @errormsg, 1;
+END;
+
 DROP TABLE IF EXISTS  #variables
 					, #dm_exec_connections
 					, #dm_exec_sessions
@@ -134,7 +143,7 @@ DROP TABLE IF EXISTS  #variables
 					, #dm_exec_query_plan_stats
 					, #last_query_plan;
 ------------------------------------------------------------
-GO
+
 ------------------------------------------------------------
 -- Settings variables
 ------------------------------------------------------------
@@ -621,7 +630,7 @@ END;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
--- Output
+-- Output proc
 ------------------------------------------------------------
 GO
 CREATE OR ALTER PROC #output
@@ -1004,5 +1013,7 @@ GO
 ------------------------------------------------------------
 EXEC #output;
 ------------------------------------------------------------
-GO
+
 ------------------------------------------------------------
+-- Run to reset:
+-- DROP TABLE #variables;
