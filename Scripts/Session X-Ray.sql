@@ -59,6 +59,26 @@ SET NOCOUNT ON;
 ------------------------------------------------------------
 GO
 ------------------------------------------------------------
+-- Helper proc
+------------------------------------------------------------
+CREATE OR ALTER PROC #log (
+	@msg nvarchar(2047),
+	@ts datetime2 = NULL,
+	@rc bigint = NULL
+)
+AS
+BEGIN;
+	DECLARE @duration_ms bigint;
+	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME());
+
+	DECLARE @template nvarchar(2047);
+	SELECT @template = CONCAT_WS(' ', @msg, '['+NULLIF(CONCAT_WS('; ', FORMAT(@duration_ms,'N0')+' ms', FORMAT(@rc,'N0')+' rows'),'')+']')
+
+	RAISERROR(@template,0,1) WITH NOWAIT;
+END;
+------------------------------------------------------------
+GO
+------------------------------------------------------------
 DROP TABLE IF EXISTS  #variables
 					, #dm_exec_connections
 					, #dm_exec_sessions
@@ -197,8 +217,7 @@ BEGIN;
 --		AND EXISTS (SELECT * FROM sys.dm_exec_requests br WHERE br.blocking_session_id = r.[session_id]) -- is blocking
 	ORDER BY r.total_elapsed_time DESC;
 
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME());
-	RAISERROR('Check query duration: %i',0,1,@duration_ms) WITH NOWAIT;
+	EXEC #log N'Check query run', @ts;
 
 	IF (@session_id IS NULL)
 	BEGIN;
@@ -214,13 +233,13 @@ END;
 
 ------------------------------------------------------------
 BEGIN;
-	RAISERROR(N'███████████████████████████████ - Input buffer',0,1) WITH NOWAIT;
-	RAISERROR('%s',0,1,@ib_text) WITH NOWAIT;
-	RAISERROR(N'███████████████████████████████ - Statement text',0,1) WITH NOWAIT;
-	RAISERROR('%s',0,1,@stmt_text) WITH NOWAIT;
-	RAISERROR(N'███████████████████████████████ - Batch text',0,1) WITH NOWAIT;
-	RAISERROR('%s',0,1,@batch_text) WITH NOWAIT;
-	RAISERROR(N'███████████████████████████████',0,1) WITH NOWAIT;
+	EXEC #log N'███████████████████████████████ - Input buffer';
+	EXEC #log @ib_text;
+	EXEC #log N'███████████████████████████████ - Statement text';
+	EXEC #log @stmt_text;
+	EXEC #log N'███████████████████████████████ - Batch text';
+	EXEC #log @batch_text;
+	EXEC #log N'███████████████████████████████';
 END;
 ------------------------------------------------------------
 
@@ -254,42 +273,42 @@ END;
 
 ------------------------------------------------------------
 DECLARE @main_dt datetime2 = SYSUTCDATETIME();
-RAISERROR('Starting volatile data captures',0,1);
+EXEC #log N'Starting volatile data captures'
 ------------------------------------------------------------
 
 ------------------------------------------------------------
 -- Top level stats - Connection/Session/Request
 ------------------------------------------------------------
 BEGIN;
-	RAISERROR('-- Top level stats --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Top level stats --';
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_connections FROM sys.dm_exec_connections WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_connections [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_connections', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_sessions FROM sys.dm_exec_sessions WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_sessions [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_sessions', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_requests FROM sys.dm_exec_requests WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_requests [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_requests', @ts, @@ROWCOUNT;
 
 	IF (@blocking_session_id IS NOT NULL) --AND 1=0
 	BEGIN;
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #dm_exec_requests_blockedby FROM sys.dm_exec_requests WHERE [session_id] = @blocking_session_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_requests_blockedby [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#dm_exec_requests_blockedby', @ts, @@ROWCOUNT;
 	END;
 
 	IF EXISTS (SELECT * FROM sys.dm_exec_requests WHERE blocking_session_id = @session_id) --AND 1=0
 	BEGIN;
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #dm_exec_requests_blocking FROM sys.dm_exec_requests WHERE blocking_session_id = @session_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_requests_blocking [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#dm_exec_requests_blocking', @ts, @@ROWCOUNT;
 	END;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
@@ -297,11 +316,11 @@ END;
 -- Query plan and text
 ------------------------------------------------------------
 BEGIN;
-	RAISERROR('-- Query plan and text --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Query plan and text --';
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_input_buffer FROM sys.dm_exec_input_buffer(@session_id, @request_id);
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_input_buffer [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_input_buffer', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT *
@@ -314,22 +333,21 @@ BEGIN;
 		UNION ALL	SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle, 0, -1)'    , [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = query_plan, sql_text = NULL   FROM sys.dm_exec_text_query_plan(@plan_handle, 0, -1) -- Plan handles only
 		UNION ALL	SELECT dmv = 'sys.dm_exec_sql_text(@sql_handle)'                   , [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = NULL      , sql_text = [text] FROM sys.dm_exec_sql_text(@sql_handle) -- Plan and SQL handles only - Does not support QS statement SQL handles
 	) x;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_plan_and_text [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_plan_and_text', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_cached_plans FROM sys.dm_exec_cached_plans WHERE plan_handle = @plan_handle;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('sys.dm_exec_cached_plans [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
-
+	EXEC #log N'#dm_exec_cached_plans', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_query_profiles FROM sys.dm_exec_query_profiles WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_query_profiles [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_query_profiles', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_plan_attributes FROM sys.dm_exec_plan_attributes(@plan_handle);
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_plan_attributes [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_plan_attributes', @ts, @@ROWCOUNT;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
@@ -337,41 +355,41 @@ END;
 -- Misc
 ------------------------------------------------------------
 BEGIN;
-	RAISERROR('-- Misc --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Misc --';
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_db_session_space_usage FROM sys.dm_db_session_space_usage WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_db_session_space_usage [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_db_session_space_usage', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_db_task_space_usage FROM sys.dm_db_task_space_usage WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_db_task_space_usage [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_db_task_space_usage', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_cdc_log_scan_sessions FROM sys.dm_cdc_log_scan_sessions WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_cdc_log_scan_sessions [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_cdc_log_scan_sessions', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_query_memory_grants FROM sys.dm_exec_query_memory_grants WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_query_memory_grants [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_query_memory_grants', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_os_tasks FROM sys.dm_os_tasks WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_os_tasks [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_os_tasks', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_os_waiting_tasks FROM sys.dm_os_waiting_tasks WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_os_waiting_tasks [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_os_waiting_tasks', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_cursors FROM sys.dm_exec_cursors(@session_id);
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_cursors [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_cursors', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_xml_handles FROM sys.dm_exec_xml_handles(@session_id);
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_xml_handles [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_xml_handles', @ts, @@ROWCOUNT;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
@@ -379,25 +397,25 @@ END;
 -- Transaction info
 ------------------------------------------------------------
 BEGIN;
-	RAISERROR('-- Transaction info --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Transaction info --';
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_tran_session_transactions FROM sys.dm_tran_session_transactions WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_tran_session_transactions [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_tran_session_transactions', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_tran_active_transactions FROM sys.dm_tran_active_transactions WHERE transaction_id = @txid;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_tran_active_transactions [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_tran_active_transactions', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_tran_database_transactions FROM sys.dm_tran_database_transactions WHERE transaction_id = @txid;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_tran_database_transactions [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_tran_database_transactions', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_tran_active_snapshot_database_transactions FROM sys.dm_tran_active_snapshot_database_transactions WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_tran_active_snapshot_database_transactions [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_tran_active_snapshot_database_transactions', @ts, @@ROWCOUNT;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
@@ -405,7 +423,7 @@ END;
 -- Locks and wait resources
 ------------------------------------------------------------
 BEGIN;
-	RAISERROR('-- Locks and wait resources --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Locks and wait resources --';
 
 	IF (@page_resource IS NOT NULL)
 	BEGIN;
@@ -415,31 +433,31 @@ BEGIN;
 		INTO #dm_db_page_info
 		FROM sys.fn_PageResCracker(@page_resource) prc
 			CROSS APPLY sys.dm_db_page_info(prc.[db_id], prc.[file_id], prc.page_id, 'DETAILED') pgi;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_db_page_info [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#dm_db_page_info', @ts, @@ROWCOUNT;
 	END;
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_session_wait_stats FROM sys.dm_exec_session_wait_stats WHERE [session_id] = @session_id;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_session_wait_stats [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_session_wait_stats', @ts, @@ROWCOUNT;
 
 	IF (1=0) -- Excluding for now, it's always slow
 	BEGIN;
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #dm_tran_locks FROM sys.dm_tran_locks l WHERE l.request_session_id = @session_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_tran_locks [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#dm_tran_locks', @ts, @@ROWCOUNT;
 	END;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
-SET @duration_ms = DATEDIFF(MILLISECOND, @main_dt, SYSUTCDATETIME()); RAISERROR('Volatile data captures done [%i ms]',0,1, @duration_ms) WITH NOWAIT;
-RAISERROR('',0,1) WITH NOWAIT;
+EXEC #log N'Volatile data captures done', @main_dt;
+EXEC #log N'';
 
 
 SELECT @main_dt = SYSUTCDATETIME();
-RAISERROR('Starting non-volatile data captures',0,1) WITH NOWAIT;
+EXEC #log N'Starting non-volatile data captures';
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -448,7 +466,7 @@ RAISERROR('Starting non-volatile data captures',0,1) WITH NOWAIT;
 -- Should run at the end since it's not dependent on the transaction in progress
 -- TODO: Consider adding a check to see if columnstore is enabled? If not, no reason to do this work.
 BEGIN;
-	RAISERROR('-- Query Store --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Query Store --';
 
 	DECLARE @qs_query_id bigint, @qs_plan_id bigint;
 	SELECT @qs_query_id = query_id FROM sys.query_store_query WHERE batch_sql_handle = @sql_handle AND query_hash = @query_hash;
@@ -461,34 +479,34 @@ BEGIN;
 	BEGIN;
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #query_store_query FROM sys.query_store_query WHERE query_id = @qs_query_id OR [object_id] = @object_id OR batch_sql_handle IN (@sql_handle, @stmt_sql_handle) OR last_compile_batch_sql_handle IN (@sql_handle, @stmt_sql_handle) OR query_hash = @query_hash;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#query_store_query [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#query_store_query', @ts, @@ROWCOUNT;
 
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #query_store_plan FROM sys.query_store_plan WHERE plan_id = @qs_plan_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#query_store_plan [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#query_store_plan', @ts, @@ROWCOUNT;
 
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #query_store_runtime_stats FROM sys.query_store_runtime_stats WHERE plan_id = @qs_plan_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#query_store_runtime_stats [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#query_store_runtime_stats', @ts, @@ROWCOUNT;
 
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #query_store_wait_stats FROM sys.query_store_wait_stats WHERE plan_id = @qs_plan_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#query_store_wait_stats [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#query_store_wait_stats', @ts, @@ROWCOUNT;
 
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #query_store_plan_feedback FROM sys.query_store_plan_feedback WHERE plan_id = @qs_plan_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#query_store_plan_feedback [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#query_store_plan_feedback', @ts, @@ROWCOUNT;
 
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #query_store_query_variant FROM sys.query_store_query_variant WHERE query_variant_query_id = @qs_query_id OR parent_query_id = @qs_query_id OR dispatcher_plan_id = @qs_plan_id;
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#query_store_query_variant [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#query_store_query_variant', @ts, @@ROWCOUNT;
 
 		SELECT @ts = SYSUTCDATETIME();
 		SELECT * INTO #dm_db_missing_index_group_stats_query FROM sys.dm_db_missing_index_group_stats_query q WHERE last_sql_handle IN (@sql_handle, @stmt_sql_handle) OR last_statement_sql_handle IN (@sql_handle, @stmt_sql_handle);
-		SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_db_missing_index_group_stats_query [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+		EXEC #log N'#dm_db_missing_index_group_stats_query', @ts, @@ROWCOUNT;
 	END;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
@@ -497,11 +515,11 @@ END;
 ------------------------------------------------------------
 -- Should run at the end since it's not dependent on the transaction in progress
 BEGIN;
-	RAISERROR('-- Various stats tables --',0,1) WITH NOWAIT;
+	EXEC #log N'-- Various stats tables --';
 
 	SELECT @ts = SYSUTCDATETIME();
 	SELECT * INTO #dm_exec_query_stats FROM sys.dm_exec_query_stats x WHERE x.plan_handle = @plan_handle OR x.[sql_handle] = @sql_handle;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#dm_exec_query_stats [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#dm_exec_query_stats', @ts, @@ROWCOUNT;
 
 	SELECT @ts = SYSUTCDATETIME();
 	WITH sys_dm_exec_function_stats AS (
@@ -518,15 +536,15 @@ BEGIN;
 		UNION ALL	SELECT dmv = 'sys.dm_exec_trigger_stats'	, * FROM sys.dm_exec_trigger_stats		WHERE [sql_handle] = @sql_handle OR plan_handle = @plan_handle OR (database_id = @db_id AND [object_id] = @object_id)
 		UNION ALL	SELECT dmv = 'sys.dm_exec_function_stats'	, * FROM sys_dm_exec_function_stats		WHERE [sql_handle] = @sql_handle OR plan_handle = @plan_handle OR (database_id = @db_id AND [object_id] = @object_id)
 	) x;
-	SELECT @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()), @rc = @@ROWCOUNT; RAISERROR('#stats_tables [%i ms; %I64d rows]',0,1, @duration_ms, @rc) WITH NOWAIT;
+	EXEC #log N'#stats_tables', @ts, @@ROWCOUNT;
 
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
-SET @duration_ms = DATEDIFF(MILLISECOND, @main_dt, SYSUTCDATETIME()); RAISERROR('Non-volatile data captures done [%i ms]',0,1, @duration_ms) WITH NOWAIT;
-RAISERROR('',0,1) WITH NOWAIT;
+EXEC #log N'Non-volatile data captures done', @main_dt;
+EXEC #log N'';
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -536,7 +554,7 @@ RAISERROR('',0,1) WITH NOWAIT;
 IF (@capture_final_plans = 1)
 BEGIN;
 	SELECT @ts = SYSUTCDATETIME();
-	RAISERROR('Starting final plan captures',0,1) WITH NOWAIT;
+	EXEC #log N'Starting final plan captures';
 
 	-- TODO: Consider a max timeout?
 	/*	IF this is a VERY long running process, or we're in the middle of an emergency
@@ -558,7 +576,7 @@ BEGIN;
 	*/
 	WHILE (@rc > 0)
 	BEGIN;
-		RAISERROR('lqp',0,1) WITH NOWAIT;
+		EXEC #log N'lqp';
 		SELECT @last_live_query_plan = query_plan, @last_seen = GETDATE()
 		FROM sys.dm_exec_query_statistics_xml(@session_id)
 		WHERE query_plan IS NOT NULL;
@@ -581,8 +599,8 @@ BEGIN;
 	*/
 	SELECT * INTO #dm_exec_query_plan_stats FROM sys.dm_exec_query_plan_stats(@plan_handle);
 
-	SET @duration_ms = DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()); RAISERROR('Final plan captures done [%i ms]',0,1, @duration_ms) WITH NOWAIT;
-	RAISERROR('',0,1) WITH NOWAIT;
+	EXEC #log N'Final plan captures done', @ts;
+	EXEC #log N'';
 END;
 ------------------------------------------------------------
 
@@ -967,7 +985,7 @@ BEGIN;
 		END;
 	END;
 END;
-SET @duration_ms = DATEDIFF(MILLISECOND, @output_ts, SYSUTCDATETIME()); RAISERROR('Output done [%ims]',0,1,@duration_ms) WITH NOWAIT;
+EXEC #log N'Output done', @output_ts;
 ------------------------------------------------------------
 GO
 ------------------------------------------------------------
