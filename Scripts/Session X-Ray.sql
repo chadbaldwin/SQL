@@ -80,17 +80,19 @@ END;
 GO
 ------------------------------------------------------------
 CREATE OR ALTER PROC #section (
-	@name nvarchar(50)
+	@name nvarchar(44)
 )
 AS
 BEGIN;
-	-- The length of 50 is used because that's the max auto-adjust column width in SSMS grid results
-	DECLARE @pad nvarchar(50) = SPACE(25-LEN(@name)/2),
-			@full_bar nvarchar(50) = REPLICATE(N'▓', 50);
+	DECLARE @len int = 38;
 
-				SELECT [ ] = @full_bar, [ ] = @full_bar , [ ] = @full_bar
-	UNION ALL	SELECT [ ] = @full_bar, [ ] = @pad+@name, [ ] = @full_bar
-	UNION ALL	SELECT [ ] = @full_bar, [ ] = @full_bar , [ ] = @full_bar;
+	-- The length of 50 is used because that's the max auto-adjust column width in SSMS grid results
+	DECLARE @bar nvarchar(50) = REPLICATE(N'▓', @len);
+	DECLARE @pad nvarchar(50) = SPACE(LEN(@bar)/2-LEN(@name)/2);
+
+				SELECT [ ] = @bar, [ ] = @bar      , [ ] = @bar
+	UNION ALL	SELECT [ ] = @bar, [ ] = @pad+@name, [ ] = @bar
+	UNION ALL	SELECT [ ] = @bar, [ ] = @bar      , [ ] = @bar;
 END;
 ------------------------------------------------------------
 GO
@@ -104,44 +106,15 @@ BEGIN;
 	THROW 51000, @errormsg, 1;
 END;
 
-DROP TABLE IF EXISTS  #variables
-					, #dm_exec_connections
-					, #dm_exec_sessions
-					, #dm_exec_requests
-					, #dm_exec_requests_blockedby
-					, #dm_exec_requests_blocking
-					, #dm_exec_input_buffer
-					, #dm_exec_plan_and_text
-					, #dm_exec_cached_plans
-					, #dm_exec_query_profiles
-					, #dm_exec_plan_attributes
-					, #qs_variables
-					, #query_store_query
-					, #query_store_plan
-					, #query_store_runtime_stats
-					, #query_store_wait_stats
-					, #query_store_plan_feedback
-					, #query_store_query_variant
-					, #dm_db_missing_index_group_stats_query
-					, #dm_exec_query_stats
-					, #stats_tables
-					, #dm_db_session_space_usage
-					, #dm_db_task_space_usage
-					, #dm_cdc_log_scan_sessions
-					, #dm_exec_query_memory_grants
-					, #dm_os_tasks
-					, #dm_os_waiting_tasks
-					, #dm_exec_cursors
-					, #dm_exec_xml_handles
-					, #dm_tran_session_transactions
-					, #dm_tran_active_transactions
-					, #dm_tran_database_transactions
-					, #dm_tran_active_snapshot_database_transactions
-					, #dm_db_page_info
-					, #dm_exec_session_wait_stats
-					, #dm_tran_locks
-					, #dm_exec_query_plan_stats
-					, #last_query_plan;
+DROP TABLE IF EXISTS #variables
+	, #dm_exec_connections, #dm_exec_sessions, #dm_exec_requests, #dm_exec_requests_blockedby, #dm_exec_requests_blocking
+	, #dm_exec_input_buffer, #dm_exec_plan_and_text, #dm_exec_cached_plans, #dm_exec_query_profiles, #dm_exec_plan_attributes
+	, #qs_variables, #query_store_query, #query_store_plan, #query_store_runtime_stats, #query_store_wait_stats
+	, #query_store_plan_feedback, #query_store_query_variant, #dm_db_missing_index_group_stats_query, #dm_exec_query_stats
+	, #stats_tables, #dm_db_session_space_usage, #dm_db_task_space_usage, #dm_cdc_log_scan_sessions, #dm_exec_query_memory_grants
+	, #dm_os_tasks, #dm_os_waiting_tasks, #dm_exec_cursors, #dm_exec_xml_handles, #dm_tran_session_transactions
+	, #dm_tran_active_transactions, #dm_tran_database_transactions, #dm_tran_active_snapshot_database_transactions
+	, #dm_db_page_info, #dm_exec_session_wait_stats, #dm_tran_locks, #dm_exec_query_plan_stats, #last_query_plan;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -176,7 +149,7 @@ DECLARE -- Data capture variables
 		-- Script operational variables
 		@ts						datetime2,
 		@duration_ms			int,
-		@max_timeout_ms			bigint			= 6 * 3600000, -- N * 3600000 = N hours
+		@max_timeout_ms			bigint		= 6 * 3600000, -- N * 3600000 = N hours
 		@timeout_time			datetime2,
 		@rc						bigint;
 ------------------------------------------------------------
@@ -231,9 +204,9 @@ BEGIN;
 		AND s.[status] NOT IN ('sleeping') -- Valid values: running, sleeping, dormant, preconnect
 		AND r.[status] NOT IN ('background','sleeping') -- Valid values: background, rollback, running, runnable, sleeping, suspended
 		AND s.login_name NOT IN ('NT AUTHORITY\SYSTEM','sa') -- Exclude any system run requests - usually these are things I don't need to worry about but are often long running so they bubble up to the top of the sort
-		-- Most of these are often long runninng but _usually_ non-blocking items so I don't want to worry about them for now
+--		-- Most of these are often long runninng but _usually_ non-blocking items so I don't want to worry about them for now
 		AND (x.batch_text NOT IN ('xp_cmdshell','xp_backup_log','xp_backup_database') OR x.batch_text IS NULL)
-		AND r.[command] NOT IN ('BACKUP LOG','WAITFOR','UPDATE STATISTICS','RESTORE HEADERONLY','DBCC','BACKUP DATABASE','UPDATE STATISTICS')
+		AND r.[command] NOT IN ('BACKUP LOG','WAITFOR','UPDATE STATISTICS','RESTORE HEADERONLY','DBCC','BACKUP DATABASE','UPDATE STATISTICS','CHECKPOINT')
 		AND (r.wait_type NOT IN ('TRACEWRITE','BROKER_RECEIVE_WAITFOR') OR r.wait_type IS NULL)
 		----------------------------------------------------------
 --		AND r.total_elapsed_time > 3000 -- Minimum runtime - Who cares about stuff running for <3 seconds? I mean, you should, but not for this script
@@ -270,7 +243,7 @@ END;
 
 ------------------------------------------------------------
 BEGIN;
-	DECLARE @xml_bad nvarchar(30) = 0x0000010002000300040005000600070008000B000C000E000F00010010001100120013001400150016001700180019001A001B001C001D001E001F00 -- NCHAR's 0-31 (excluding CR, LF, TAB)
+	DECLARE @xml_bad nvarchar(30) = 0x0000010002000300040005000600070008000B000C000E000F00010010001100120013001400150016001700180019001A001B001C001D001E001F00; -- NCHAR's 0-31 (excluding CR, LF, TAB)
 	SELECT run_time			= CONCAT(FORMAT(DATEDIFF(DAY, @start_time, GETDATE()),'0#'), ' ', FORMAT(DATEADD(MILLISECOND, DATEDIFF(MILLISECOND, @start_time, GETDATE()), 0),'HH:mm:ss.fff'))
 		, [session_id]		= @session_id
 		, request_id		= @request_id
@@ -356,12 +329,12 @@ BEGIN;
 	SELECT *
 	INTO #dm_exec_plan_and_text
 	FROM (
-					SELECT dmv = 'sys.dm_exec_sql_text(@plan_handle)'                  , [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = NULL      , sql_text = [text] FROM sys.dm_exec_sql_text(@plan_handle) -- Plan and SQL handles only - Does not support QS statement SQL handles
-		UNION ALL	SELECT dmv = 'sys.dm_exec_query_plan(@plan_handle)'                , [dbid], objectid, number, [encrypted], query_plan_xml = query_plan, query_plan_text = NULL      , sql_text = NULL   FROM sys.dm_exec_query_plan(@plan_handle) -- Plan handles only
-		UNION ALL	SELECT dmv = 'sys.dm_exec_query_plan_stats(@plan_handle)'          , [dbid], objectid, number, [encrypted], query_plan_xml = query_plan, query_plan_text = NULL      , sql_text = NULL   FROM sys.dm_exec_query_plan_stats(@plan_handle) -- Plan handles only
-		UNION ALL	SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle)'           , [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = query_plan, sql_text = NULL   FROM sys.dm_exec_text_query_plan(@plan_handle, @stmt_start, @stmt_end) -- Plan handles only
-		UNION ALL	SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle, 0, -1)'    , [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = query_plan, sql_text = NULL   FROM sys.dm_exec_text_query_plan(@plan_handle, 0, -1) -- Plan handles only
-		UNION ALL	SELECT dmv = 'sys.dm_exec_sql_text(@sql_handle)'                   , [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = NULL      , sql_text = [text] FROM sys.dm_exec_sql_text(@sql_handle) -- Plan and SQL handles only - Does not support QS statement SQL handles
+					SELECT dmv = 'sys.dm_exec_sql_text(@plan_handle)'				, [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = NULL      , sql_text = [text] FROM sys.dm_exec_sql_text(@plan_handle) -- Plan and SQL handles only - Does not support QS statement SQL handles
+		UNION ALL	SELECT dmv = 'sys.dm_exec_query_plan(@plan_handle)'				, [dbid], objectid, number, [encrypted], query_plan_xml = query_plan, query_plan_text = NULL      , sql_text = NULL   FROM sys.dm_exec_query_plan(@plan_handle) -- Plan handles only
+		UNION ALL	SELECT dmv = 'sys.dm_exec_query_plan_stats(@plan_handle)'		, [dbid], objectid, number, [encrypted], query_plan_xml = query_plan, query_plan_text = NULL      , sql_text = NULL   FROM sys.dm_exec_query_plan_stats(@plan_handle) -- Plan handles only
+		UNION ALL	SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle)'		, [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = query_plan, sql_text = NULL   FROM sys.dm_exec_text_query_plan(@plan_handle, @stmt_start, @stmt_end) -- Plan handles only
+		UNION ALL	SELECT dmv = 'sys.dm_exec_text_query_plan(@plan_handle, 0, -1)'	, [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = query_plan, sql_text = NULL   FROM sys.dm_exec_text_query_plan(@plan_handle, 0, -1) -- Plan handles only
+		UNION ALL	SELECT dmv = 'sys.dm_exec_sql_text(@sql_handle)'				, [dbid], objectid, number, [encrypted], query_plan_xml = NULL      , query_plan_text = NULL      , sql_text = [text] FROM sys.dm_exec_sql_text(@sql_handle) -- Plan and SQL handles only - Does not support QS statement SQL handles
 	) x;
 	EXEC #log N'#dm_exec_plan_and_text', @ts, @@ROWCOUNT;
 
@@ -661,8 +634,20 @@ BEGIN;
 	EXEC #section 'Session / Request';
 
 	IF EXISTS (SELECT * FROM #dm_exec_connections) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_connections')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_connections; END;
-	IF EXISTS (SELECT * FROM #dm_exec_sessions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_sessions')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_sessions; END;
-	IF EXISTS (SELECT * FROM #dm_exec_requests) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_requests')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_requests; END;
+	IF EXISTS (SELECT * FROM #dm_exec_sessions)
+	BEGIN;
+		SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_sessions')+NCHAR(31), N'▓' [▓]
+			, context_info_text = TRY_CONVERT(varchar(128), [context_info])
+			, N'▓' [▓], *
+		FROM #dm_exec_sessions;
+	END;
+	IF EXISTS (SELECT * FROM #dm_exec_requests)
+	BEGIN;
+		SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_requests')+NCHAR(31), N'▓' [▓]
+			, context_info_text = TRY_CONVERT(varchar(128), [context_info])
+			, N'▓' [▓], *
+		FROM #dm_exec_requests;
+	END;
 	IF OBJECT_ID('tempdb..#dm_exec_requests_blockedby') IS NOT NULL
 	BEGIN;
 		IF EXISTS (SELECT * FROM #dm_exec_requests_blockedby) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_requests - blocked by')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_requests_blockedby; END;
@@ -740,7 +725,13 @@ BEGIN;
 				, N'▓ last_compile_batch_sql_handle ->' [▓]
 				, sql_text                            = IIF(y.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, y.sql_text , v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
 				, stmt_text                           = IIF(y.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, y.stmt_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
-				, N'▓' [▓], q.*
+				, N'▓' [▓], q.query_id, q.query_text_id, q.context_settings_id, q.[object_id], q.batch_sql_handle, q.query_hash, q.is_internal_query, q.query_parameterization_type, q.query_parameterization_type_desc, q.initial_compile_start_time, q.last_compile_start_time, q.last_execution_time, q.last_compile_batch_sql_handle, q.last_compile_batch_offset_start, q.last_compile_batch_offset_end, q.count_compiles, q.is_clouddb_internal_query
+				, N'▓' [▓], q.avg_compile_duration, q.last_compile_duration
+				, N'▓' [▓], q.avg_bind_duration, q.last_bind_duration
+				, N'▓' [▓], q.avg_bind_cpu_time, q.last_bind_cpu_time
+				, N'▓' [▓], q.avg_optimize_duration, q.last_optimize_duration
+				, N'▓' [▓], q.avg_optimize_cpu_time, q.last_optimize_cpu_time
+				, N'▓' [▓], q.avg_compile_memory_kb, q.last_compile_memory_kb, q.max_compile_memory_kb
 			FROM #query_store_query q
 				CROSS JOIN #variables v
 				OUTER APPLY sys.dm_exec_sql_text(q.batch_sql_handle) t1
@@ -761,13 +752,26 @@ BEGIN;
 			SELECT dmv = CONVERT(nchar(49), N'sys.query_store_runtime_stats')+NCHAR(31), N'▓' [▓]
 				, avg_duration = CONCAT(FORMAT(avg_duration/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MICROSECOND, avg_duration, CONVERT(datetime2,'0001-01-01')),'HH:mm:ss.fff'))
 				, avg_memory_grant_mb = avg_query_max_used_memory * 8.0 / 1024.0
-				, N'▓' [▓], *
+				, N'▓' [▓], runtime_stats_id, plan_id, runtime_stats_interval_id, execution_type, execution_type_desc, first_execution_time, last_execution_time, count_executions, replica_group_id
+				, N'▓' [▓], avg_duration, last_duration, min_duration, [max_duration], stdev_duration
+				, N'▓' [▓], avg_cpu_time, last_cpu_time, min_cpu_time, max_cpu_time, stdev_cpu_time
+				, N'▓' [▓], avg_logical_io_reads, last_logical_io_reads, min_logical_io_reads, max_logical_io_reads, stdev_logical_io_reads
+				, N'▓' [▓], avg_logical_io_writes, last_logical_io_writes, min_logical_io_writes, max_logical_io_writes, stdev_logical_io_writes
+				, N'▓' [▓], avg_physical_io_reads, last_physical_io_reads, min_physical_io_reads, max_physical_io_reads, stdev_physical_io_reads
+				, N'▓' [▓], avg_clr_time, last_clr_time, min_clr_time, max_clr_time, stdev_clr_time
+				, N'▓' [▓], avg_dop, last_dop, min_dop, max_dop, stdev_dop
+				, N'▓' [▓], avg_query_max_used_memory, last_query_max_used_memory, min_query_max_used_memory, max_query_max_used_memory, stdev_query_max_used_memory
+				, N'▓' [▓], avg_rowcount, last_rowcount, min_rowcount, max_rowcount, stdev_rowcount
+				, N'▓' [▓], avg_num_physical_io_reads, last_num_physical_io_reads, min_num_physical_io_reads, max_num_physical_io_reads, stdev_num_physical_io_reads
+				, N'▓' [▓], avg_log_bytes_used, last_log_bytes_used, min_log_bytes_used, max_log_bytes_used, stdev_log_bytes_used
+				, N'▓' [▓], avg_tempdb_space_used, last_tempdb_space_used, min_tempdb_space_used, max_tempdb_space_used, stdev_tempdb_space_used
+				, N'▓' [▓], avg_page_server_io_reads, last_page_server_io_reads, min_page_server_io_reads, max_page_server_io_reads, stdev_page_server_io_reads
 			FROM #query_store_runtime_stats
 			ORDER BY last_execution_time DESC;
 		END;
 		IF EXISTS (SELECT * FROM #query_store_wait_stats) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_wait_stats')+NCHAR(31), N'▓' [▓], * FROM #query_store_wait_stats ORDER BY runtime_stats_interval_id, wait_category; END;
 		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_plan_feedback')+NCHAR(31), N'▓' [▓], * FROM #query_store_plan_feedback; END;
-		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_query_variant')+NCHAR(31), N'▓' [▓], * FROM #query_store_query_variant; END;
+		IF EXISTS (SELECT * FROM #query_store_query_variant) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_query_variant')+NCHAR(31), N'▓' [▓], * FROM #query_store_query_variant; END;
 		IF EXISTS (SELECT * FROM #dm_db_missing_index_group_stats_query)
 		BEGIN;
 			SELECT dmv = CONVERT(nchar(49), N'sys.dm_db_missing_index_group_stats_query')+NCHAR(31), N'▓' [▓]
@@ -811,7 +815,26 @@ BEGIN;
 				, statement_text = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, stt.statement_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE)
 				, avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MILLISECOND, x.total_elapsed_time/(x.execution_count*1.0), 0),'HH:mm:ss.fff')) -- TODO: Validate accuracy - Finding this to be inaccurate fairly often due to "incorrect" execution counts (too low)
 				, avg_grant_mb = CONVERT(decimal(15,3), x.total_grant_kb / x.execution_count / 1024.0)
-			, N'▓' [▓], x.*
+			, N'▓' [▓], x.[sql_handle], x.statement_start_offset, x.statement_end_offset, x.plan_generation_num, x.plan_handle, x.creation_time, x.last_execution_time, x.execution_count, x.query_hash, x.query_plan_hash, x.statement_sql_handle, x.statement_context_id
+			, N'▓' [▓], x.total_worker_time, x.last_worker_time, x.min_worker_time, x.max_worker_time
+			, N'▓' [▓], x.total_physical_reads, x.last_physical_reads, x.min_physical_reads, x.max_physical_reads
+			, N'▓' [▓], x.total_logical_writes, x.last_logical_writes, x.min_logical_writes, x.max_logical_writes
+			, N'▓' [▓], x.total_logical_reads, x.last_logical_reads, x.min_logical_reads, x.max_logical_reads
+			, N'▓' [▓], x.total_clr_time, x.last_clr_time, x.min_clr_time, x.max_clr_time
+			, N'▓' [▓], x.total_elapsed_time, x.last_elapsed_time, x.min_elapsed_time, x.max_elapsed_time
+			, N'▓' [▓], x.total_rows, x.last_rows, x.min_rows, x.max_rows
+			, N'▓' [▓], x.total_dop, x.last_dop, x.min_dop, x.max_dop
+			, N'▓' [▓], x.total_grant_kb, x.last_grant_kb, x.min_grant_kb, x.max_grant_kb
+			, N'▓' [▓], x.total_used_grant_kb, x.last_used_grant_kb, x.min_used_grant_kb, x.max_used_grant_kb
+			, N'▓' [▓], x.total_ideal_grant_kb, x.last_ideal_grant_kb, x.min_ideal_grant_kb, x.max_ideal_grant_kb
+			, N'▓' [▓], x.total_reserved_threads, x.last_reserved_threads, x.min_reserved_threads, x.max_reserved_threads
+			, N'▓' [▓], x.total_used_threads, x.last_used_threads, x.min_used_threads, x.max_used_threads
+			, N'▓' [▓], x.total_columnstore_segment_reads, x.last_columnstore_segment_reads, x.min_columnstore_segment_reads, x.max_columnstore_segment_reads
+			, N'▓' [▓], x.total_columnstore_segment_skips, x.last_columnstore_segment_skips, x.min_columnstore_segment_skips, x.max_columnstore_segment_skips
+			, N'▓' [▓], x.total_spills, x.last_spills, x.min_spills, x.max_spills
+			, N'▓' [▓], x.total_num_physical_reads, x.last_num_physical_reads, x.min_num_physical_reads, x.max_num_physical_reads
+			, N'▓' [▓], x.total_page_server_reads, x.last_page_server_reads, x.min_page_server_reads, x.max_page_server_reads
+			, N'▓' [▓], x.total_num_page_server_reads, x.last_num_page_server_reads, x.min_num_page_server_reads, x.max_num_page_server_reads
 		FROM #dm_exec_query_stats x
 			CROSS JOIN #variables v
 			OUTER APPLY sys.dm_exec_sql_text(v.[sql_handle]) st
@@ -825,7 +848,16 @@ BEGIN;
 			, ph = IIF(x.plan_handle = v.plan_handle, N'☑️', '')
 			, sh = IIF(x.[sql_handle] = v.[sql_handle], N'☑️', '')
 			, obj = IIF(x.database_id = v.[db_id] AND x.[object_id] = v.[object_id], N'☑️', '')
-			, N'▓' [▓], x.*
+			, N'▓' [▓], x.dmv, x.database_id, x.[object_id], x.[type], x.[type_desc], x.[sql_handle], x.plan_handle, x.cached_time, x.last_execution_time, x.execution_count
+			, N'▓' [▓], x.total_worker_time, x.last_worker_time, x.min_worker_time, x.max_worker_time
+			, N'▓' [▓], x.total_physical_reads, x.last_physical_reads, x.min_physical_reads, x.max_physical_reads
+			, N'▓' [▓], x.total_logical_writes, x.last_logical_writes, x.min_logical_writes, x.max_logical_writes
+			, N'▓' [▓], x.total_logical_reads, x.last_logical_reads, x.min_logical_reads, x.max_logical_reads
+			, N'▓' [▓], x.total_elapsed_time, x.last_elapsed_time, x.min_elapsed_time, x.max_elapsed_time
+			, N'▓' [▓], x.total_spills, x.last_spills, x.min_spills, x.max_spills
+			, N'▓' [▓], x.total_num_physical_reads, x.last_num_physical_reads, x.min_num_physical_reads, x.max_num_physical_reads
+			, N'▓' [▓], x.total_page_server_reads, x.last_page_server_reads, x.min_page_server_reads, x.max_page_server_reads
+			, N'▓' [▓], x.total_num_page_server_reads, x.last_num_page_server_reads, x.min_num_page_server_reads, x.max_num_page_server_reads
 		FROM #stats_tables x
 			CROSS JOIN #variables v;
 
