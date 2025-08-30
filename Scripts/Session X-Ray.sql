@@ -86,7 +86,7 @@ AS
 BEGIN;
 	-- The length of 50 is used because that's the max auto-adjust column width in SSMS grid results
 	DECLARE @pad nvarchar(50) = SPACE(25-LEN(@name)/2),
-			@full_bar nvarchar(50) = REPLICATE(N'█', 50);
+			@full_bar nvarchar(50) = REPLICATE(N'▓', 50);
 
 				SELECT [ ] = @full_bar, [ ] = @full_bar , [ ] = @full_bar
 	UNION ALL	SELECT [ ] = @full_bar, [ ] = @pad+@name, [ ] = @full_bar
@@ -258,18 +258,19 @@ END;
 
 ------------------------------------------------------------
 BEGIN;
-	EXEC #log N'███████████████████████████████ - Input buffer';
+	EXEC #log N'▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ - Input buffer';
 	EXEC #log @ib_text;
-	EXEC #log N'███████████████████████████████ - Statement text';
+	EXEC #log N'▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ - Statement text';
 	EXEC #log @stmt_text;
-	EXEC #log N'███████████████████████████████ - Batch text';
+	EXEC #log N'▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ - Batch text';
 	EXEC #log @batch_text;
-	EXEC #log N'███████████████████████████████';
+	EXEC #log N'▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓';
 END;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
 BEGIN;
+	DECLARE @xml_bad nvarchar(30) = 0x0000010002000300040005000600070008000B000C000E000F00010010001100120013001400150016001700180019001A001B001C001D001E001F00 -- NCHAR's 0-31 (excluding CR, LF, TAB)
 	SELECT run_time			= CONCAT(FORMAT(DATEDIFF(DAY, @start_time, GETDATE()),'0#'), ' ', FORMAT(DATEADD(MILLISECOND, DATEDIFF(MILLISECOND, @start_time, GETDATE()), 0),'HH:mm:ss.fff'))
 		, [session_id]		= @session_id
 		, request_id		= @request_id
@@ -292,6 +293,10 @@ BEGIN;
 		, [database_name]	= DB_NAME(@db_id)
 		, [schema_name]		= OBJECT_SCHEMA_NAME(@object_id, @db_id)
 		, [object_name]		= OBJECT_NAME(@object_id, @db_id)
+		-- Other stuff to set aside
+		, xml_bad			= @xml_bad
+		, xml_replace		= REPLICATE(N'?',LEN(@xml_bad))
+		, crlf				= NCHAR(13)+NCHAR(10)
 	INTO #variables;
 END;
 ------------------------------------------------------------
@@ -612,7 +617,7 @@ BEGIN;
 	SELECT last_seen = @last_seen
 		, estimated_total_runtime = CONCAT(FORMAT(DATEDIFF(DAY, @start_time, @last_seen),'0#'), ' ', FORMAT(DATEADD(MILLISECOND, DATEDIFF(MILLISECOND, @start_time, @last_seen), 0),'HH:mm:ss.fff'))
 		, last_live_query_plan = @last_live_query_plan
-		, N'█' [█], [description] = 'Last captured live query plan'
+		, N'▓' [▓], [description] = 'Last captured live query plan'
 	INTO #last_query_plan
 	WHERE @last_seen IS NOT NULL AND @last_live_query_plan IS NOT NULL;
 
@@ -637,9 +642,6 @@ CREATE OR ALTER PROC #output
 AS
 BEGIN;
 	DECLARE @output_ts datetime2 = SYSUTCDATETIME();
-
-	DECLARE @xml_replace nvarchar(30) = 0x0000010002000300040005000600070008000B000C000E000F00010010001100120013001400150016001700180019001A001B001C001D001E001F00, -- NCHAR's 0-31 (excluding CR, LF, TAB)
-			@crlf nchar(2) = NCHAR(13)+NCHAR(10);
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
@@ -648,9 +650,9 @@ BEGIN;
 	SELECT run_time, [session_id], request_id, transaction_id, stmt_start, stmt_end, page_resource, command FROM #variables;
 	SELECT 'Handles and hashes', plan_handle, [sql_handle], stmt_sql_handle, query_hash, plan_hash FROM #variables;
 	SELECT 'Text'
-		, input_buffer		= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, v.input_buffer, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
-		, batch_text		= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, v.batch_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
-		, statement_text	= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, v.statement_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
+		, input_buffer		= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, v.input_buffer, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE)
+		, batch_text		= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, v.batch_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE)
+		, statement_text	= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, v.statement_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE)
 	FROM #variables v;
 	SELECT 'Object info', [db_id], [object_id], [database_name], [schema_name], [object_name] FROM #variables;
 	------------------------------------------------------------
@@ -658,37 +660,37 @@ BEGIN;
 	------------------------------------------------------------
 	EXEC #section 'Session / Request';
 
-	IF EXISTS (SELECT * FROM #dm_exec_connections) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_connections')+N'█', * FROM #dm_exec_connections; END;
-	IF EXISTS (SELECT * FROM #dm_exec_sessions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_sessions')+N'█', * FROM #dm_exec_sessions; END;
-	IF EXISTS (SELECT * FROM #dm_exec_requests) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_requests')+N'█', * FROM #dm_exec_requests; END;
+	IF EXISTS (SELECT * FROM #dm_exec_connections) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_connections')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_connections; END;
+	IF EXISTS (SELECT * FROM #dm_exec_sessions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_sessions')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_sessions; END;
+	IF EXISTS (SELECT * FROM #dm_exec_requests) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_requests')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_requests; END;
 	IF OBJECT_ID('tempdb..#dm_exec_requests_blockedby') IS NOT NULL
 	BEGIN;
-		IF EXISTS (SELECT * FROM #dm_exec_requests_blockedby) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_requests - blocked by')+N'█', * FROM #dm_exec_requests_blockedby; END;
+		IF EXISTS (SELECT * FROM #dm_exec_requests_blockedby) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_requests - blocked by')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_requests_blockedby; END;
 	END;
 	IF OBJECT_ID('tempdb..#dm_exec_requests_blocking') IS NOT NULL
 	BEGIN;
-		IF EXISTS (SELECT * FROM #dm_exec_requests_blocking) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_requests - blocking')+N'█', * FROM #dm_exec_requests_blocking; END;
+		IF EXISTS (SELECT * FROM #dm_exec_requests_blocking) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_requests - blocking')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_requests_blocking; END;
 	END;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
 	EXEC #section 'Query plan and text';
 
-	IF EXISTS (SELECT * FROM #dm_exec_input_buffer) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_input_buffer')+N'█', * FROM #dm_exec_input_buffer; END;
+	IF EXISTS (SELECT * FROM #dm_exec_input_buffer) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_input_buffer')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_input_buffer; END;
 	IF EXISTS (SELECT * FROM #dm_exec_plan_and_text)
 	BEGIN;
 		WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
-		SELECT [dmv                                              █] = CONVERT(nchar(49), x.dmv)+N'█'
+		SELECT dmv = CONVERT(nchar(49), x.dmv)+NCHAR(31), N'▓' [▓]
 			, x.[dbid], x.objectid, x.[encrypted]
-			, sql_text = IIF(x.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, x.sql_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
+			, sql_text = IIF(x.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, x.sql_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
 			, y.query_plan_xml
 			, query_plan_text = COALESCE(x.query_plan_text, CONVERT(nvarchar(MAX), x.query_plan_xml))
-			, N'█' [█]
+			, N'▓' [▓]
 			, d.[description]
 			, plan_stmt_count = y.query_plan_xml.value('count(/ShowPlanXML/BatchSequence/Batch/Statements/*)', 'int')
 			, missing_idx_count = y.query_plan_xml.value('count(/ShowPlanXML/BatchSequence/Batch/Statements/*//MissingIndex)', 'int') -- TODO: Dedup count - Currently counts all missing, even if index suggestion is duplicated.
 			, warning_count = y.query_plan_xml.value('count(/ShowPlanXML/BatchSequence/Batch/Statements//QueryPlan//Warnings)', 'int') -- TODO: Dedup count - Currently counts all missing, even if index suggestion is duplicated.
-			, statement_text = IIF(st.statement_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, st.statement_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
+			, statement_text = IIF(st.statement_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, st.statement_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
 		FROM #dm_exec_plan_and_text x
 			CROSS JOIN #variables v
 			CROSS APPLY (
@@ -705,17 +707,17 @@ BEGIN;
 			CROSS APPLY (SELECT statement_text = SUBSTRING(x.sql_text, v.stmt_start/2+1, IIF(v.stmt_end = -1, DATALENGTH(x.sql_text), (v.stmt_end-v.stmt_start)/2+1))) st
 		ORDER BY x.dmv;
 	END;
-	IF EXISTS (SELECT * FROM #dm_exec_cached_plans) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_cached_plans')+N'█', * FROM #dm_exec_cached_plans; END;
+	IF EXISTS (SELECT * FROM #dm_exec_cached_plans) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_cached_plans')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_cached_plans; END;
 	IF EXISTS (SELECT * FROM #dm_exec_query_profiles)
 	BEGIN;
-		SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_query_profiles')+N'█'
+		SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_query_profiles')+NCHAR(31), N'▓' [▓]
 			, ce_accuracy_pct = FORMAT(row_count / NULLIF((estimate_row_count * 1.0), 0), 'P0')
 			, row_count = FORMAT(row_count, 'N0')
-			, N'█' [█], *
+			, N'▓' [▓], *
 		FROM #dm_exec_query_profiles
 		ORDER BY node_id, thread_id;
 	END;
-	IF EXISTS (SELECT * FROM #dm_exec_plan_attributes) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_plan_attributes')+N'█', * FROM #dm_exec_plan_attributes; END;
+	IF EXISTS (SELECT * FROM #dm_exec_plan_attributes) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_plan_attributes')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_plan_attributes; END;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
@@ -725,21 +727,22 @@ BEGIN;
 	BEGIN;
 		IF EXISTS (SELECT * FROM #query_store_query)
 		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_query')+N'█'
+			SELECT dmv = CONVERT(nchar(49), N'sys.query_store_query')+NCHAR(31), N'▓' [▓]
 				, batch_sql_handle_match              = CASE q.batch_sql_handle              WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
 				, last_compile_batch_sql_handle_match = CASE q.last_compile_batch_sql_handle WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
 				, [off]                               = IIF(q.last_compile_batch_offset_start = v.stmt_start AND q.last_compile_batch_offset_end = v.stmt_end, N'☑️', '')
 				, obj                                 = IIF(q.[object_id] = v.[object_id], N'☑️', '')
 				, qh                                  = IIF(q.query_hash = v.query_hash, N'☑️', '')
 				, hh                                  = IIF(q.batch_sql_handle = q.last_compile_batch_sql_handle OR (q.batch_sql_handle IS NULL AND q.last_compile_batch_sql_handle IS NULL), N'☑️', '')
-				, N'█ batch_sql_handle ->' [█]
-				, sql_text                            = IIF(x.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, x.sql_text , @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, stmt_text                           = IIF(x.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, x.stmt_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, N'█ last_compile_batch_sql_handle ->' [█]
-				, sql_text                            = IIF(y.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, y.sql_text , @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, stmt_text                           = IIF(y.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, y.stmt_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, N'█' [█], q.*
+				, N'▓ batch_sql_handle ->' [▓]
+				, sql_text                            = IIF(x.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, x.sql_text , v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, stmt_text                           = IIF(x.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, x.stmt_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, N'▓ last_compile_batch_sql_handle ->' [▓]
+				, sql_text                            = IIF(y.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, y.sql_text , v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, stmt_text                           = IIF(y.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, y.stmt_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, N'▓' [▓], q.*
 			FROM #query_store_query q
+				CROSS JOIN #variables v
 				OUTER APPLY sys.dm_exec_sql_text(q.batch_sql_handle) t1
 				CROSS APPLY (
 					SELECT sql_text = t1.[text]
@@ -750,38 +753,38 @@ BEGIN;
 					SELECT sql_text = t2.[text]
 						, stmt_text = SUBSTRING(t2.[text], q.last_compile_batch_offset_start/2+1, IIF(q.last_compile_batch_offset_end = -1, DATALENGTH(t2.[text]), (q.last_compile_batch_offset_end-q.last_compile_batch_offset_start)/2+1))
 				) y
-				CROSS JOIN #variables v
-			ORDER BY q.last_execution_time DESC;
+			ORDER BY q.last_compile_batch_offset_start DESC;
 		END;
-		IF EXISTS (SELECT * FROM #query_store_plan) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_plan')+N'█', * FROM #query_store_plan; END;
+		IF EXISTS (SELECT * FROM #query_store_plan) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_plan')+NCHAR(31), N'▓' [▓], * FROM #query_store_plan; END;
 		IF EXISTS (SELECT * FROM #query_store_runtime_stats)
 		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_runtime_stats')+N'█'
+			SELECT dmv = CONVERT(nchar(49), N'sys.query_store_runtime_stats')+NCHAR(31), N'▓' [▓]
 				, avg_duration = CONCAT(FORMAT(avg_duration/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MICROSECOND, avg_duration, CONVERT(datetime2,'0001-01-01')),'HH:mm:ss.fff'))
 				, avg_memory_grant_mb = avg_query_max_used_memory * 8.0 / 1024.0
-				, N'█' [█], *
+				, N'▓' [▓], *
 			FROM #query_store_runtime_stats
 			ORDER BY last_execution_time DESC;
 		END;
-		IF EXISTS (SELECT * FROM #query_store_wait_stats) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_wait_stats')+N'█', * FROM #query_store_wait_stats ORDER BY runtime_stats_interval_id, wait_category; END;
-		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_plan_feedback')+N'█', * FROM #query_store_plan_feedback; END;
-		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.query_store_query_variant')+N'█', * FROM #query_store_query_variant; END;
+		IF EXISTS (SELECT * FROM #query_store_wait_stats) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_wait_stats')+NCHAR(31), N'▓' [▓], * FROM #query_store_wait_stats ORDER BY runtime_stats_interval_id, wait_category; END;
+		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_plan_feedback')+NCHAR(31), N'▓' [▓], * FROM #query_store_plan_feedback; END;
+		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.query_store_query_variant')+NCHAR(31), N'▓' [▓], * FROM #query_store_query_variant; END;
 		IF EXISTS (SELECT * FROM #dm_db_missing_index_group_stats_query)
 		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_missing_index_group_stats_query')+N'█'
+			SELECT dmv = CONVERT(nchar(49), N'sys.dm_db_missing_index_group_stats_query')+NCHAR(31), N'▓' [▓]
 				, last_sql_handle			= CASE last_sql_handle           WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
 				, last_statement_sql_handle	= CASE last_statement_sql_handle WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
 				, [off]						= IIF(q.last_statement_start_offset = v.stmt_start AND q.last_statement_end_offset = v.stmt_end, N'☑️', '')
 				, qh						= IIF(q.query_hash = v.query_hash, N'☑️', '')
 				, ph						= IIF(q.query_plan_hash = v.plan_hash, N'☑️', '')
-				, N'█ last_sql_handle ->' [█]
-				, sql_text					= IIF(x.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, x.sql_text , @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, stmt_text					= IIF(x.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, x.stmt_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, N'█ last_statement_sql_handle ->' [█]
-				, stmt_text					= IIF(qt.query_sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, qt.query_sql_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE), NULL)
-				, N'█' [█], q.*
-				, N'█' [█], id.*
+				, N'▓ last_sql_handle ->' [▓]
+				, sql_text					= IIF(x.sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, x.sql_text , v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, stmt_text					= IIF(x.stmt_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, x.stmt_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, N'▓ last_statement_sql_handle ->' [▓]
+				, stmt_text					= IIF(qt.query_sql_text IS NOT NULL, (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, qt.query_sql_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE), NULL)
+				, N'▓' [▓], q.*
+				, N'▓' [▓], id.*
 			FROM #dm_db_missing_index_group_stats_query q
+				CROSS JOIN #variables v
 				LEFT JOIN sys.dm_db_missing_index_groups ig ON ig.index_group_handle = q.group_handle
 				LEFT JOIN sys.dm_db_missing_index_details id ON id.index_handle = ig.index_handle
 				LEFT JOIN sys.query_store_query_text qt ON qt.statement_sql_handle = q.last_statement_sql_handle
@@ -790,7 +793,6 @@ BEGIN;
 					SELECT sql_text = t1.[text]
 						, stmt_text = SUBSTRING(t1.[text], q.last_statement_start_offset/2+1, IIF(q.last_statement_end_offset = -1, DATALENGTH(t1.[text]), (q.last_statement_end_offset-q.last_statement_start_offset)/2+1))
 				) x
-				CROSS JOIN #variables v
 			ORDER BY q.avg_user_impact DESC;
 		END;
 	END;
@@ -801,15 +803,15 @@ BEGIN;
 
 	IF EXISTS (SELECT * FROM #dm_exec_query_stats)
 	BEGIN;
-		SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_query_stats')+N'█'
+		SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_query_stats')+NCHAR(31), N'▓' [▓]
 			, ph = IIF(x.plan_handle = v.plan_handle, N'☑️', '')
 			, sh = IIF(x.[sql_handle] = v.[sql_handle], N'☑️', '')
 			, [off] = IIF(x.statement_start_offset = v.stmt_start AND x.statement_end_offset = v.stmt_end, N'☑️', '')
-			, N'█' [█]
-				, statement_text = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', @crlf, stt.statement_text, @crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, @xml_replace, REPLICATE(N'?',LEN(@xml_replace))) FOR XML PATH(''), TYPE)
+			, N'▓' [▓]
+				, statement_text = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE(CONCAT(N'--', v.crlf, stt.statement_text, v.crlf, N'--'),'?>','??') COLLATE Latin1_General_Bin2, v.xml_bad, v.xml_replace) FOR XML PATH(''), TYPE)
 				, avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MILLISECOND, x.total_elapsed_time/(x.execution_count*1.0), 0),'HH:mm:ss.fff')) -- TODO: Validate accuracy - Finding this to be inaccurate fairly often due to "incorrect" execution counts (too low)
 				, avg_grant_mb = CONVERT(decimal(15,3), x.total_grant_kb / x.execution_count / 1024.0)
-			, N'█' [█], x.*
+			, N'▓' [▓], x.*
 		FROM #dm_exec_query_stats x
 			CROSS JOIN #variables v
 			OUTER APPLY sys.dm_exec_sql_text(v.[sql_handle]) st
@@ -819,16 +821,15 @@ BEGIN;
 
 	IF EXISTS (SELECT * FROM #stats_tables)
 	BEGIN;
-		SELECT [dmv                                              █] = CONVERT(nchar(49), x.dmv)+N'█'
+		SELECT dmv = CONVERT(nchar(49), x.dmv)+NCHAR(31), N'▓' [▓]
 			, ph = IIF(x.plan_handle = v.plan_handle, N'☑️', '')
 			, sh = IIF(x.[sql_handle] = v.[sql_handle], N'☑️', '')
 			, obj = IIF(x.database_id = v.[db_id] AND x.[object_id] = v.[object_id], N'☑️', '')
-			, N'█' [█]
-			, x.*
+			, N'▓' [▓], x.*
 		FROM #stats_tables x
 			CROSS JOIN #variables v;
 
-		SELECT [dmv                                              █] = CONVERT(nchar(49), x.dmv)+N'█'
+		SELECT dmv = CONVERT(nchar(49), x.dmv)+NCHAR(31), N'▓' [▓]
 			, plans_per_query = COUNT(DISTINCT IIF(x.[sql_handle] = v.[sql_handle], x.plan_handle, NULL))
 			, queries_per_plan = COUNT(DISTINCT IIF(x.[plan_handle] = v.plan_handle, x.[sql_handle], NULL))
 			, plans_per_object = COUNT(DISTINCT IIF(x.[object_id] = v.[object_id], x.plan_handle, NULL))
@@ -841,32 +842,32 @@ BEGIN;
 	------------------------------------------------------------
 	EXEC #section 'Misc';
 
-	IF EXISTS (SELECT * FROM #dm_db_session_space_usage) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_session_space_usage')+N'█', * FROM #dm_db_session_space_usage; END;
-	IF EXISTS (SELECT * FROM #dm_db_task_space_usage) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_task_space_usage')+N'█', * FROM #dm_db_task_space_usage ORDER BY exec_context_id; END;
-	IF EXISTS (SELECT * FROM #dm_cdc_log_scan_sessions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_cdc_log_scan_sessions')+N'█', * FROM #dm_cdc_log_scan_sessions; END;
+	IF EXISTS (SELECT * FROM #dm_db_session_space_usage) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_db_session_space_usage')+NCHAR(31), N'▓' [▓], * FROM #dm_db_session_space_usage; END;
+	IF EXISTS (SELECT * FROM #dm_db_task_space_usage) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_db_task_space_usage')+NCHAR(31), N'▓' [▓], * FROM #dm_db_task_space_usage ORDER BY exec_context_id; END;
+	IF EXISTS (SELECT * FROM #dm_cdc_log_scan_sessions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_cdc_log_scan_sessions')+NCHAR(31), N'▓' [▓], * FROM #dm_cdc_log_scan_sessions; END;
 	IF EXISTS (SELECT * FROM #dm_exec_query_memory_grants)
 	BEGIN;
-		SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_query_memory_grants')+N'█'
+		SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_query_memory_grants')+NCHAR(31), N'▓' [▓]
 			, requested_memory_gb = FORMAT(requested_memory_kb / 1024.0 / 1024.0, 'N3')
 			, granted_memory_gb = FORMAT(granted_memory_kb / 1024.0 / 1024.0, 'N3')
 			, used_memory_gb = FORMAT(used_memory_kb / 1024.0 / 1024.0, 'N3')
 			, max_used_memory_gb = FORMAT(max_used_memory_kb / 1024.0 / 1024.0, 'N3')
-			, N'█' [█], *
+			, N'▓' [▓], *
 		FROM #dm_exec_query_memory_grants;
 	END;
-	IF EXISTS (SELECT * FROM #dm_os_tasks) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_os_tasks')+N'█', * FROM #dm_os_tasks ORDER BY exec_context_id; END;
-	IF EXISTS (SELECT * FROM #dm_os_waiting_tasks) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_os_waiting_tasks')+N'█', * FROM #dm_os_waiting_tasks ORDER BY exec_context_id, blocking_session_id, blocking_exec_context_id; END;
-	IF EXISTS (SELECT * FROM #dm_exec_cursors) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_cursors')+N'█', * FROM #dm_exec_cursors; END;
-	IF EXISTS (SELECT * FROM #dm_exec_xml_handles) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_xml_handles')+N'█', * FROM #dm_exec_xml_handles; END;
+	IF EXISTS (SELECT * FROM #dm_os_tasks) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_os_tasks')+NCHAR(31), N'▓' [▓], * FROM #dm_os_tasks ORDER BY exec_context_id; END;
+	IF EXISTS (SELECT * FROM #dm_os_waiting_tasks) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_os_waiting_tasks')+NCHAR(31), N'▓' [▓], * FROM #dm_os_waiting_tasks ORDER BY exec_context_id, blocking_session_id, blocking_exec_context_id; END;
+	IF EXISTS (SELECT * FROM #dm_exec_cursors) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_cursors')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_cursors; END;
+	IF EXISTS (SELECT * FROM #dm_exec_xml_handles) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_xml_handles')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_xml_handles; END;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
 	EXEC #section 'Transaction info';
 
-	IF EXISTS (SELECT * FROM #dm_tran_session_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_session_transactions')+N'█', * FROM #dm_tran_session_transactions; END;
-	IF EXISTS (SELECT * FROM #dm_tran_active_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_active_transactions')+N'█', * FROM #dm_tran_active_transactions; END;
-	IF EXISTS (SELECT * FROM #dm_tran_database_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_database_transactions')+N'█', * FROM #dm_tran_database_transactions; END;
-	IF EXISTS (SELECT * FROM #dm_tran_active_snapshot_database_transactions) BEGIN; SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_active_snapshot_database_transactions')+N'█', * FROM #dm_tran_active_snapshot_database_transactions; END;
+	IF EXISTS (SELECT * FROM #dm_tran_session_transactions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_tran_session_transactions')+NCHAR(31), N'▓' [▓], * FROM #dm_tran_session_transactions; END;
+	IF EXISTS (SELECT * FROM #dm_tran_active_transactions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_tran_active_transactions')+NCHAR(31), N'▓' [▓], * FROM #dm_tran_active_transactions; END;
+	IF EXISTS (SELECT * FROM #dm_tran_database_transactions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_tran_database_transactions')+NCHAR(31), N'▓' [▓], * FROM #dm_tran_database_transactions; END;
+	IF EXISTS (SELECT * FROM #dm_tran_active_snapshot_database_transactions) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_tran_active_snapshot_database_transactions')+NCHAR(31), N'▓' [▓], * FROM #dm_tran_active_snapshot_database_transactions; END;
 	------------------------------------------------------------
 	
 	------------------------------------------------------------
@@ -876,21 +877,21 @@ BEGIN;
 	BEGIN;
 		IF EXISTS (SELECT * FROM #dm_db_page_info)
 		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_db_page_info')+N'█'
+			SELECT dmv = CONVERT(nchar(49), N'sys.dm_db_page_info')+NCHAR(31), N'▓' [▓]
 				, [database_name] = DB_NAME(database_id)
 				, [schema_name] = OBJECT_SCHEMA_NAME([object_id], database_id)
 				, [object_name] = OBJECT_NAME([object_id], database_id)
 				, index_id
-				, N'█' [█], *
+				, N'▓' [▓], *
 			FROM #dm_db_page_info;
 		END;
 	END;
 
 	IF EXISTS (SELECT * FROM #dm_exec_session_wait_stats)
 	BEGIN;
-		SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_session_wait_stats')+N'█'
+		SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_session_wait_stats')+NCHAR(31), N'▓' [▓]
 			, *
-			, N'█' [█]
+			, N'▓' [▓]
 			, [description] = CASE -- TODO: Lots of unecessary duplicate work when many existing scripts and tools provide this - Can we pull from those tools/repos? Or keep this going because I prefer different descriptions?
 								WHEN wait_type LIKE 'PAGELATCH[_]%' THEN 'Accessing pages in memory'
 								WHEN wait_type LIKE 'PAGEIOLATCH[_]%' THEN 'Pulling pages from disk into memory buffers'
@@ -926,13 +927,13 @@ BEGIN;
 	BEGIN;
 		IF EXISTS (SELECT * FROM #dm_tran_locks)
 		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_tran_locks')+N'█'
+			SELECT dmv = CONVERT(nchar(49), N'sys.dm_tran_locks')+NCHAR(31), N'▓' [▓]
 				, l.resource_type, l.resource_subtype
 				, resource_database = COALESCE(DB_NAME(l.resource_database_id), CONCAT('UNKNOWN:{',l.resource_database_id,'}'))
 				, l.resource_description, l.resource_associated_entity_id, l.request_mode, l.request_type, l.request_status
 				, l.request_reference_count
 				, l.request_owner_type, l.request_owner_id, l.lock_owner_address
-				, N'█' [█]
+				, N'▓' [▓]
 				, x.resource_name
 				, [object_type] = CASE
 									WHEN l.resource_type = 'OBJECT' THEN OBJECTPROPERTYEX(l.resource_associated_entity_id, 'BaseType')
@@ -940,8 +941,8 @@ BEGIN;
 									ELSE NULL
 								END
 				, [index_type]  = COALESCE(i.[type_desc], ti.[type_desc])
-				, N'█' [█], p.[object_id], i.[type_desc]
-				, N'█' [█], tp.[object_id], ti.[type_desc]
+				, N'▓' [▓], p.[object_id], i.[type_desc]
+				, N'▓' [▓], tp.[object_id], ti.[type_desc]
 			FROM #dm_tran_locks l
 				LEFT JOIN (sys.partitions p
 					JOIN sys.indexes i ON i.[object_id] = p.[object_id] AND i.index_id = p.index_id
@@ -984,21 +985,12 @@ BEGIN;
 
 	IF (OBJECT_ID('tempdb..#dm_exec_query_plan_stats') IS NOT NULL)
 	BEGIN;
-		IF EXISTS (SELECT * FROM #dm_exec_query_plan_stats)
-		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_query_plan_stats')+N'█', *
-				, N'█' [█], [description] = 'Last known actual execution plan'
-			FROM #dm_exec_query_plan_stats;
-		END;
+		IF EXISTS (SELECT * FROM #dm_exec_query_plan_stats) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_query_plan_stats')+NCHAR(31), N'▓' [▓], * FROM #dm_exec_query_plan_stats; END;
 	END;
 
 	IF (OBJECT_ID('tempdb..#last_query_plan') IS NOT NULL)
 	BEGIN;
-		IF EXISTS (SELECT * FROM #last_query_plan)
-		BEGIN;
-			SELECT [dmv                                              █] = CONVERT(nchar(49), N'sys.dm_exec_query_statistics_xml')+N'█', *
-			FROM #last_query_plan;
-		END;
+		IF EXISTS (SELECT * FROM #last_query_plan) BEGIN; SELECT dmv = CONVERT(nchar(49), N'sys.dm_exec_query_statistics_xml')+NCHAR(31), N'▓' [▓], * FROM #last_query_plan; END;
 	END;
 	------------------------------------------------------------
 	
