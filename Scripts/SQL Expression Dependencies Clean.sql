@@ -1,3 +1,10 @@
+GO
+SET NOCOUNT ON;
+
+/*
+	po* = "Parent Object" fields
+	co* = "Child Object" fields
+*/
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -21,6 +28,7 @@ CREATE TABLE ##dependencies (
 ------------------------------------------------------------
 
 ------------------------------------------------------------
+RAISERROR('Initialize ##dependencies',0,1) WITH NOWAIT;
 INSERT INTO ##dependencies (poID, poDatabase, poSchema, poName, poType, coID, coServer, coDatabase, coSchema, coName, coType)
 SELECT d.referencing_id, DB_NAME(), s.[name], o.[name], o.[type_desc] -- Using sys table identifiers to clean up casing differences
     , d.referenced_id, d.referenced_server_name, COALESCE(d.referenced_database_name, DB_NAME()), d.referenced_schema_name, d.referenced_entity_name, co.[type_desc]
@@ -47,6 +55,7 @@ FROM sys.triggers t
 ----------------------------------------------------------------------
 
 ----------------------------------------------------------------------
+RAISERROR('Fill in missing schema',0,1) WITH NOWAIT;
 -- Fill in missing schema where coID is available - if we know the object ID then we confidently know the schema
 UPDATE d SET d.coSchema = OBJECT_SCHEMA_NAME(d.coID)
 FROM ##dependencies d
@@ -54,6 +63,7 @@ WHERE d.coServer IS NULL
     AND d.coID IS NOT NULL AND d.coSchema IS NULL
     AND d.coDatabase = DB_NAME();
 
+RAISERROR('Fill in missing object IDs',0,1) WITH NOWAIT;
 -- Fill in missing object IDs - attempt 1 - use provided schema - accurate/reliable
 UPDATE d SET d.coID = x.coID
 FROM ##dependencies d
@@ -70,6 +80,7 @@ WHERE d.coServer IS NULL
 ------------------------------------------------------------
 -- Fill in missing object IDs and schema
 ------------------------------------------------------------
+RAISERROR('Fill in missing object IDs and schema',0,1) WITH NOWAIT;
 /*
    This is where we start getting into the "best attempt" status. The actual logic
    used by SQL Server to determine the schema of an object reference when one is missing
@@ -120,6 +131,7 @@ WHERE d.coServer IS NULL
 ------------------------------------------------------------
 -- Remove invalid objects
 ------------------------------------------------------------
+RAISERROR('Remove invalid objects',0,1) WITH NOWAIT;
 /*
    Example: legacy objects that were dropped but their references weren't, aliases detected as objects, etc
 
@@ -139,6 +151,7 @@ WHERE d.coServer IS NULL
 ------------------------------------------------------------
 -- Fill in missing object types
 ------------------------------------------------------------
+RAISERROR('Fill in missing object types',0,1) WITH NOWAIT;
 -- For current database
 UPDATE d SET d.coType = o.[type_desc]
 FROM ##dependencies d
@@ -170,6 +183,7 @@ WHERE d.coServer IS NULL
 ------------------------------------------------------------
 -- Quick cleanup for identifier casing
 ------------------------------------------------------------
+RAISERROR('Final cleanup - Fix identifier casing',0,1) WITH NOWAIT;
 UPDATE d
 SET d.poDatabase = DB_NAME(DB_ID(d.poDatabase))
     , d.poSchema = OBJECT_SCHEMA_NAME(d.poID, DB_ID(d.poDatabase))
@@ -187,5 +201,63 @@ WHERE d.coID IS NOT NULL
 ------------------------------------------------------------
 
 ------------------------------------------------------------
+-- Fill in usage of sp_executesql and EXEC()
+------------------------------------------------------------
+RAISERROR('Fill in usage of sp_executesql',0,1) WITH NOWAIT;
+INSERT INTO ##dependencies (poID, poDatabase, poSchema, poName, poType, coID, coServer, coDatabase, coSchema, coName, coType)
+SELECT o.[object_id], DB_NAME(), s.[name], o.[name], o.[type_desc]
+	, so.[object_id], NULL, 'master', SCHEMA_NAME(so.[schema_id]), so.[name], so.[type_desc]
+FROM sys.schemas s
+	JOIN sys.objects o ON o.[schema_id] = s.[schema_id]
+	JOIN sys.sql_modules sm ON sm.[object_id] = o.[object_id]
+	JOIN sys.system_objects so ON so.[object_id] = OBJECT_ID('sys.sp_executesql')
+WHERE sm.[definition] LIKE '%sp[_]executesql%'
+
+RAISERROR('Fill in usage of EXEC()',0,1) WITH NOWAIT;
+INSERT INTO ##dependencies (poID, poDatabase, poSchema, poName, poType, coID, coServer, coDatabase, coSchema, coName, coType)
+SELECT o.[object_id], DB_NAME(), s.[name], o.[name], o.[type_desc]
+	, NULL, NULL, NULL, NULL, 'EXEC({string})', 'STATEMENT'
+FROM sys.schemas s
+	JOIN sys.objects o ON o.[schema_id] = s.[schema_id]
+	JOIN sys.sql_modules sm ON sm.[object_id] = o.[object_id]
+WHERE sm.[definition] LIKE '%EXEC (%'
+	OR sm.[definition] LIKE '%EXEC(%'
+	OR sm.[definition] LIKE '%EXECUTE (%'
+	OR sm.[definition] LIKE '%EXECUTE(%'
+------------------------------------------------------------
+
+------------------------------------------------------------
+-- Mark indexed views
+------------------------------------------------------------
+UPDATE d SET poType = 'INDEXED_VIEW'
+FROM ##dependencies d
+WHERE poType = 'VIEW'
+	AND EXISTS (SELECT * FROM sys.indexes i WHERE i.[object_id] = d.[poID]);
+
+UPDATE d SET coType = 'INDEXED_VIEW'
+FROM ##dependencies d
+WHERE coType = 'VIEW'
+	AND EXISTS (SELECT * FROM sys.indexes i WHERE i.[object_id] = d.[coID]);
+------------------------------------------------------------
+
+------------------------------------------------------------
+-- Remove dups
+------------------------------------------------------------
+/* TODO: Figure out why there are duplicates in the first place
+   Probably due to different values in the original view that later clean up to be the same.
+   Like "dbo.MyTable" vs "MyTable" - which eventually resolves to "dbo.MyTable"
+*/
+RAISERROR('Remove duplicates',0,1) WITH NOWAIT;
+DELETE x
+FROM (
+	SELECT rn = ROW_NUMBER() OVER (PARTITION BY poID, coID, coServer, coDatabase, coSchema, coName, coType ORDER BY (SELECT NULL))
+	FROM ##dependencies
+) x
+WHERE x.rn > 1
+------------------------------------------------------------
+
+------------------------------------------------------------
 SELECT *
-FROM ##dependencies;
+FROM ##dependencies
+--WHERE (poType IS NULL OR (coType IS NULL AND coServer IS NULL)) -- Check for missing type info
+ORDER BY poDatabase, poSchema, poName, coServer, coDatabase, coSchema, coName
