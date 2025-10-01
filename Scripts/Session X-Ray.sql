@@ -43,6 +43,19 @@
 	* Warnings
 	* Optimization info - Level, abort reason, no parallel reason
 	* Memory grant info
+
+	----
+
+	Add ability to detect when the session has moved onto a new request.
+	The point of this script is to capture a specific proc, but if the
+	session has already completed that proc and moved onto a new plan, then
+	do we really want to continue capturing data??
+
+	----
+
+	Add:
+	* sys.plan_guides
+	* sys.query_store_query_hints
 */
 ------------------------------------------------------------
 
@@ -55,6 +68,7 @@
 SET DEADLOCK_PRIORITY LOW;
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 SET NOCOUNT ON;
+SET STATISTICS IO, TIME OFF;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -156,7 +170,7 @@ DECLARE -- Data capture variables
 
 		@batch_plan				xml,
 		@stmt_plan				xml,
-		@live_plan				xml,
+		@live_stmt_plan			xml,
 
 		@plan_hash				binary(8),
 		@query_hash				binary(8),
@@ -190,7 +204,7 @@ BEGIN;
 
 	-- TODO: Need to verify that batch and stmt plans are actually what I say they are
 	WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
-	SELECT TOP(1) 
+	SELECT TOP(1)
 		  @session_id			= s.[session_id]
 		, @request_id			= r.request_id
 		, @blocking_session_id	= NULLIF(r.blocking_session_id, 0)
@@ -212,8 +226,8 @@ BEGIN;
 		, @plan_hash			= r.query_plan_hash
 		, @query_hash			= r.query_hash
 
-		, @db_id				= COALESCE(tqp_s.[dbid], tqp_b.[dbid], DB_ID(PARSENAME(ib2.object_name_from_input_buffer,3)))
-		, @object_id			= COALESCE(st_sh.objectid, OBJECT_ID(ib2.object_name_from_input_buffer))
+		, @db_id				= x.[db_id]
+		, @object_id			= x.[object_id]
 		, @page_resource		= r.page_resource
 
 		, @start_time			= r.start_time
@@ -225,11 +239,19 @@ BEGIN;
 		OUTER APPLY sys.dm_exec_input_buffer(r.[session_id], r.request_id) ib
 		OUTER APPLY sys.dm_exec_text_query_plan(r.plan_handle, 0, -1) tqp_b
 		OUTER APPLY sys.dm_exec_text_query_plan(r.plan_handle, r.statement_start_offset, r.statement_end_offset) tqp_s
-		CROSS APPLY (SELECT object_name_from_input_buffer = IIF(ib.event_type = 'RPC Event', LEFT(ib.event_info, CHARINDEX(';', ib.event_info)-1), NULL)) ib2
+--		LEFT JOIN sys.dm_exec_query_memory_grants mg ON mg.[session_id] = s.[session_id]
+		CROSS APPLY (
+			SELECT object_name_from_input_buffer = IIF(ib.event_type = 'RPC Event', LEFT(ib.event_info, CHARINDEX(';', ib.event_info)-1), NULL)
+		) ib2
 		CROSS APPLY (
 			SELECT stmt_plan	= TRY_CONVERT(xml, tqp_s.query_plan) -- Using TRY_CONVERT because in some cases, the plan has too many nested levels than SQL Server supports (128 levels)
 				, batch_text	= st_sh.[text] -- sql_handle text is nearly always available, but when it's not, neither is the plan_handle text.
+				, [db_id]		= COALESCE(tqp_s.[dbid], tqp_b.[dbid], DB_ID(PARSENAME(ib2.object_name_from_input_buffer,3)))
+				, [object_id]	= COALESCE(st_sh.objectid, OBJECT_ID(ib2.object_name_from_input_buffer))
 		) x
+		CROSS APPLY (
+			SELECT [object_name] = OBJECT_NAME(x.[object_id], x.[db_id])
+		) y
 	WHERE 1=1
 		AND s.[session_id] <> @@SPID -- Exclude self
 		AND s.[status] NOT IN ('sleeping') -- Valid values: running, sleeping, dormant, preconnect
@@ -239,6 +261,7 @@ BEGIN;
 		AND (x.batch_text NOT IN ('xp_cmdshell','xp_backup_log','xp_backup_database') OR x.batch_text IS NULL)
 		AND r.command NOT IN ('BACKUP LOG','WAITFOR','UPDATE STATISTICS','RESTORE HEADERONLY','DBCC','BACKUP DATABASE','UPDATE STATISTICS','CHECKPOINT')
 		AND (r.wait_type NOT IN ('TRACEWRITE','BROKER_RECEIVE_WAITFOR') OR r.wait_type IS NULL)
+		AND r.query_plan_hash IS NOT NULL
 		----------------------------------------------------------
 --		AND r.total_elapsed_time > 3000 -- Minimum runtime - Who cares about stuff running for <3 seconds? I mean, you should, but not for this script
 --		AND r.blocking_session_id <> 0 -- is blocked
@@ -250,10 +273,10 @@ BEGIN;
 	IF (@session_id IS NOT NULL) -- This flow control may be uncessary if session_id is null. It probably runs fast anyway.
 	BEGIN;
 		-- Fill in derivative variables
-		SELECT @live_plan = query_plan FROM sys.dm_exec_query_statistics_xml(@session_id);
+		SELECT @live_stmt_plan = query_plan FROM sys.dm_exec_query_statistics_xml(@session_id);
 	END;
 
-	IF (DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()) > 0)
+	--IF (DATEDIFF(MILLISECOND, @ts, SYSUTCDATETIME()) > 0)
 	BEGIN;
 		EXEC #log 'Check query run', @ts;
 	END;
@@ -302,7 +325,7 @@ BEGIN;
 
 		, batch_plan			= @batch_plan
 		, stmt_plan				= @stmt_plan
-		, live_plan				= @live_plan
+		, live_stmt_plan		= @live_stmt_plan
 
 		, plan_hash				= @plan_hash
 		, query_hash			= @query_hash
@@ -649,9 +672,13 @@ BEGIN;
 	WHILE (1=1)
 	BEGIN;
 		--EXEC #log 'lqp';
+		WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
 		SELECT @last_live_query_plan = query_plan, @last_seen = GETDATE()
-		FROM sys.dm_exec_query_statistics_xml(@session_id)
-		WHERE query_plan IS NOT NULL;
+		FROM sys.dm_exec_query_statistics_xml(@session_id) s -- Live query plan (in-flight plan)
+			CROSS JOIN #variables v
+		WHERE s.query_plan IS NOT NULL
+			AND s.query_plan.value('(/ShowPlanXML/BatchSequence/Batch/Statements//*[@QueryPlanHash])[1]/@QueryPlanHash','varchar(100)') = v.plan_hash; -- if the session has moved onto executing a new plan, then don't save it.
+
 		IF (@@ROWCOUNT = 0) BEGIN; BREAK; END;
 		WAITFOR DELAY '00:00:00.300';
 	END;
@@ -659,7 +686,6 @@ BEGIN;
 	SELECT last_seen = @last_seen
 		, estimated_total_runtime = CONCAT(FORMAT(DATEDIFF(DAY, @start_time, @last_seen),'0#'), ' ', FORMAT(DATEADD(MILLISECOND, DATEDIFF(MILLISECOND, @start_time, @last_seen), 0),'HH:mm:ss.fff'))
 		, last_live_query_plan = @last_live_query_plan
-		, N'▓' [▓], [description] = 'Last captured live query plan'
 	INTO #last_query_plan
 	WHERE @last_seen IS NOT NULL AND @last_live_query_plan IS NOT NULL;
 
@@ -669,7 +695,7 @@ BEGIN;
 		know the request has completed and the "last known" plan is _likely_ for the
 		request we captured. However, this 100% an assumption that needs to be verified.
 	*/
-	SELECT * INTO #dm_exec_query_plan_stats FROM sys.dm_exec_query_plan_stats(@plan_handle);
+	SELECT * INTO #dm_exec_query_plan_stats FROM sys.dm_exec_query_plan_stats(@plan_handle) WHERE query_plan IS NOT NULL;
 
 	EXEC #log 'Final plan captures done', @ts;
 	EXEC #log '';
@@ -686,10 +712,14 @@ BEGIN;
 	EXEC #log 'Starting Output';
 
 	DECLARE @output_ts datetime2 = SYSUTCDATETIME();
+	DECLARE @section_ts datetime2;
+	DECLARE @query_ts datetime2;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Variables';
+	EXEC #log 'Starting section: Variables';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	SELECT run_time, [session_id], request_id, transaction_id, stmt_start, stmt_end, command FROM #variables;
 	SELECT 'Handles and hashes', plan_handle, [sql_handle], stmt_sql_handle, query_hash, plan_hash FROM #variables;
@@ -699,16 +729,32 @@ BEGIN;
 		, statement_text	= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + statement_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, xml_bad, xml_replace) WHERE statement_text IS NOT NULL FOR XML PATH(''), TYPE)
 		, object_text		= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + object_text    + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, xml_bad, xml_replace) WHERE object_text    IS NOT NULL FOR XML PATH(''), TYPE)
 	FROM #variables;
-	SELECT 'Plans', batch_plan, stmt_plan, live_plan FROM #variables;
+	WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
+	SELECT 'Plans', v.batch_plan, v.stmt_plan, v.live_stmt_plan, x.live_stmt_plan_hash, live_stmt_plan_note = IIF(x.live_stmt_plan_hash = CONVERT(varchar(18), v.plan_hash, 1), N'👍 Caught plan in time', N'🚫 Caught plan too late, session has already moved on')
+	FROM #variables v
+		CROSS APPLY (SELECT live_stmt_plan_hash = live_stmt_plan.value('(/ShowPlanXML/BatchSequence/Batch/Statements//*[@QueryPlanHash])[1]/@QueryPlanHash','varchar(100)')) x;
 	SELECT 'Resource info', [db_id], [object_id], page_resource, [database_name], [schema_name], [object_name] FROM #variables;
+
+	EXEC #log 'Completed section: Variables', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Session / Request';
+	EXEC #log 'Starting section: Session / Request';
+	SELECT @section_ts = SYSUTCDATETIME();
 
-	IF EXISTS (SELECT * FROM #dm_exec_connections) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_connections')+CHAR(31), N'▓' [▓], * FROM #dm_exec_connections; END;
+	IF EXISTS (SELECT * FROM #dm_exec_connections)
+	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
+		SELECT dmv = CONVERT(char(49), 'sys.dm_exec_connections')+CHAR(31)
+			, N'▓' [▓], *
+		FROM #dm_exec_connections;
+		EXEC #log 'Query: #dm_exec_connections', @query_ts, @@ROWCOUNT;
+	END;
+
 	IF EXISTS (SELECT * FROM #dm_exec_sessions)
 	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
 		SELECT dmv = CONVERT(char(49), 'sys.dm_exec_sessions')+CHAR(31), N'▓' [▓]
 			, context_info_text = TRY_CONVERT(varchar(128), NULLIF([context_info], 0x))
 			, N'▓' [▓]
@@ -718,9 +764,12 @@ BEGIN;
 				, prev_error, original_security_id, original_login_name, last_successful_logon, last_unsuccessful_logon, unsuccessful_logons
 				, group_id, database_id, authenticating_database_id, open_transaction_count, page_server_reads, contained_availability_group_id
 		FROM #dm_exec_sessions;
+		EXEC #log 'Query: #dm_exec_sessions', @query_ts, @@ROWCOUNT;
 	END;
+
 	IF EXISTS (SELECT * FROM #dm_exec_requests)
 	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
 		SELECT dmv = CONVERT(char(49), 'sys.dm_exec_requests')+CHAR(31), N'▓' [▓]
 			, context_info_text = TRY_CONVERT(varchar(128), NULLIF([context_info], 0x))
 			, N'▓' [▓]
@@ -730,8 +779,10 @@ BEGIN;
 				, granted_query_memory, executing_managed_code, group_id, statement_context_id, dop, parallel_worker_count
 				, external_script_request_id, is_resumable, page_server_reads, dist_statement_id, [label]
 		FROM #dm_exec_requests;
+		EXEC #log 'Query: #dm_exec_requests', @query_ts, @@ROWCOUNT;
 	END;
 
+	SELECT @query_ts = SYSUTCDATETIME();
 	SELECT dmv = CONVERT(char(49), x.dmv)+CHAR(31), N'▓' [▓]
 		, x.text_size, x.[language], x.[date_format], x.date_first, x.[quoted_identifier], x.[arithabort], x.[ansi_null_dflt_on], x.[ansi_defaults], x.[ansi_warnings], x.[ansi_padding], x.[ansi_nulls], x.[concat_null_yields_null]
 		, transaction_isolation_level = CHOOSE(x.transaction_isolation_level+1, 'Unspecified','ReadUncommitted','ReadCommitted','Repeatable','Serializable','Snapshot')
@@ -740,31 +791,60 @@ BEGIN;
 				  SELECT dmv = 'sys.dm_exec_sessions', text_size, [language], [date_format], date_first, [quoted_identifier], [arithabort], [ansi_null_dflt_on], [ansi_defaults], [ansi_warnings], [ansi_padding], [ansi_nulls], [concat_null_yields_null], transaction_isolation_level, [lock_timeout], [deadlock_priority] FROM #dm_exec_sessions
 		UNION ALL SELECT dmv = 'sys.dm_exec_requests', text_size, [language], [date_format], date_first, [quoted_identifier], [arithabort], [ansi_null_dflt_on], [ansi_defaults], [ansi_warnings], [ansi_padding], [ansi_nulls], [concat_null_yields_null], transaction_isolation_level, [lock_timeout], [deadlock_priority] FROM #dm_exec_requests
 	) x;
+	EXEC #log 'Query: #dm_exec_sessions/#dm_exec_requests - context settings', @query_ts, @@ROWCOUNT;
 
 	IF EXISTS (SELECT * FROM #variables WHERE stmt_context_id IS NOT NULL)
 	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
 		SELECT dmv = CONVERT(char(49), 'sys.query_context_settings')+CHAR(31), N'▓' [▓], c.*
 		FROM sys.query_context_settings c
 			JOIN #variables v ON v.stmt_context_id = c.context_settings_id;
+		EXEC #log 'Query: sys.query_context_settings', @query_ts, @@ROWCOUNT;
 	END;
 
 	IF OBJECT_ID('tempdb..#dm_exec_requests_blockedby') IS NOT NULL
 	BEGIN;
-		IF EXISTS (SELECT * FROM #dm_exec_requests_blockedby) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_requests - blocked by')+CHAR(31), N'▓' [▓], * FROM #dm_exec_requests_blockedby; END;
+		IF EXISTS (SELECT * FROM #dm_exec_requests_blockedby)
+		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
+			SELECT dmv = CONVERT(char(49), 'sys.dm_exec_requests - blocked by')+CHAR(31)
+				, N'▓' [▓], *
+			FROM #dm_exec_requests_blockedby;
+			EXEC #log 'Query: #dm_exec_requests_blockedby', @query_ts, @@ROWCOUNT;
+		END;
 	END;
 	IF OBJECT_ID('tempdb..#dm_exec_requests_blocking') IS NOT NULL
 	BEGIN;
-		IF EXISTS (SELECT * FROM #dm_exec_requests_blocking) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_requests - blocking')+CHAR(31), N'▓' [▓], * FROM #dm_exec_requests_blocking; END;
+		IF EXISTS (SELECT * FROM #dm_exec_requests_blocking)
+		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
+			SELECT dmv = CONVERT(char(49), 'sys.dm_exec_requests - blocking')+CHAR(31)
+				, N'▓' [▓], *
+			FROM #dm_exec_requests_blocking;
+			EXEC #log 'Query: #dm_exec_requests_blocking', @query_ts, @@ROWCOUNT;
+		END;
 	END;
+
+	EXEC #log 'Completed section: Session / Request', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Query plan and text';
+	EXEC #log 'Starting section: Query plan and text';
+	SELECT @section_ts = SYSUTCDATETIME();
 
-	IF EXISTS (SELECT * FROM #dm_exec_input_buffer) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_input_buffer')+CHAR(31), N'▓' [▓], * FROM #dm_exec_input_buffer; END;
+	IF EXISTS (SELECT * FROM #dm_exec_input_buffer)
+	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
+		SELECT dmv = CONVERT(char(49), 'sys.dm_exec_input_buffer')+CHAR(31)
+			, N'▓' [▓], *
+		FROM #dm_exec_input_buffer;
+		EXEC #log 'Query: #dm_exec_input_buffer', @query_ts, @@ROWCOUNT;
+	END;
 
 	IF EXISTS (SELECT * FROM #dm_exec_plan_and_text)
 	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
 		WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
 		SELECT dmv = CONVERT(char(49), x.dmv)+CHAR(31), N'▓' [▓]
 			, x.[dbid], x.objectid, x.[encrypted]
@@ -792,33 +872,59 @@ BEGIN;
 			CROSS APPLY (SELECT query_plan_xml = COALESCE(x.query_plan_xml, TRY_CONVERT(xml, x.query_plan_text))) y
 			CROSS APPLY (SELECT statement_text = SUBSTRING(x.sql_text, v.stmt_start/2+1, IIF(v.stmt_end = -1, DATALENGTH(x.sql_text), (v.stmt_end-v.stmt_start)/2+1))) st
 		ORDER BY x.dmv;
+		EXEC #log 'Query: #dm_exec_plan_and_text', @query_ts, @@ROWCOUNT;
 	END;
 
 	-- One of the few tables that I want to always return even if it's empty because I want to show that there are no cached plans
-	SELECT dmv = CONVERT(char(49), 'sys.dm_exec_cached_plans')+CHAR(31), N'▓' [▓], * FROM #dm_exec_cached_plans;
+	SELECT @query_ts = SYSUTCDATETIME();
+	SELECT dmv = CONVERT(char(49), 'sys.dm_exec_cached_plans')+CHAR(31)
+		, N'▓' [▓], *
+	FROM #dm_exec_cached_plans;
+	EXEC #log 'Query: #dm_exec_cached_plans', @query_ts, @@ROWCOUNT;
 
 	IF EXISTS (SELECT * FROM #dm_exec_query_profiles)
 	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
 		SELECT dmv = CONVERT(char(49), 'sys.dm_exec_query_profiles')+CHAR(31), N'▓' [▓]
-			, ce_accuracy_pct			= RIGHT(SPACE(50)+FORMAT(row_count / NULLIF((estimate_row_count * 1.0), 0)	,'P0'), LEN('ce_accuracy_pct'))
-			, current_row_count			= RIGHT(SPACE(50)+FORMAT(row_count											,'N0'), LEN('current_row_count'))
-			, estimate_row_count		= RIGHT(SPACE(50)+FORMAT(estimate_row_count									,'N0'), LEN('estimate_row_count'))
-			, estimated_read_row_count	= RIGHT(SPACE(50)+FORMAT(estimated_read_row_count							,'N0'), LEN('estimated_read_row_count'))
-			, N'▓' [▓], physical_operator_name, node_id, thread_id, task_address, rewind_count, rebind_count, end_of_scan_count, first_active_time, last_active_time, open_time, first_row_time, last_row_time, close_time, elapsed_time_ms, cpu_time_ms, database_id, [object_id], index_id, scan_count, logical_read_count, physical_read_count, read_ahead_count, write_page_count, lob_logical_read_count, lob_physical_read_count, lob_read_ahead_count, segment_read_count, segment_skip_count, actual_read_row_count, page_server_read_count, page_server_read_ahead_count, lob_page_server_read_count, lob_page_server_read_ahead_count
+			, ce_accuracy_pct			= RIGHT(SPACE(50)+FORMAT(ce_accuracy_pct			,'N2'),	GREATEST(LEN('ce_accuracy_pct')				, MAX(LEN(FORMAT(ce_accuracy_pct			,'N2'))) OVER ()))
+			, current_row_count			= RIGHT(SPACE(50)+FORMAT(row_count					,'N0'), GREATEST(LEN('current_row_count')			, MAX(LEN(FORMAT(row_count					,'N0'))) OVER ()))
+			, estimate_row_count		= RIGHT(SPACE(50)+FORMAT(estimate_row_count			,'N0'), GREATEST(LEN('estimate_row_count')			, MAX(LEN(FORMAT(estimate_row_count			,'N0'))) OVER ()))
+			, estimated_read_row_count	= RIGHT(SPACE(50)+FORMAT(estimated_read_row_count	,'N0'), GREATEST(LEN('estimated_read_row_count')	, MAX(LEN(FORMAT(estimated_read_row_count	,'N0'))) OVER ()))
+			, N'▓' [▓], physical_operator_name, node_id, thread_id, task_address
+			, N'▓' [▓], rewind_count, rebind_count, end_of_scan_count
+			, N'▓' [▓], first_active_time, last_active_time, open_time, first_row_time, last_row_time, close_time
+			, N'▓' [▓], elapsed_time_ms, cpu_time_ms
+			, N'▓' [▓], database_id, [object_id], index_id
+			, N'▓' [▓], scan_count, logical_read_count, physical_read_count, read_ahead_count, write_page_count, lob_logical_read_count, lob_physical_read_count, lob_read_ahead_count, segment_read_count, segment_skip_count, actual_read_row_count
+			, N'▓' [▓], page_server_read_count, page_server_read_ahead_count, lob_page_server_read_count, lob_page_server_read_ahead_count
 		FROM #dm_exec_query_profiles
+			CROSS APPLY (SELECT ce_accuracy_pct = row_count / NULLIF((estimate_row_count * 1.0), 0)) x
 		ORDER BY node_id DESC, thread_id;
+		EXEC #log 'Query: #dm_exec_query_profiles', @query_ts, @@ROWCOUNT;
 	END;
 
-	IF EXISTS (SELECT * FROM #dm_exec_plan_attributes) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_plan_attributes')+CHAR(31), N'▓' [▓], * FROM #dm_exec_plan_attributes; END;
+	IF EXISTS (SELECT * FROM #dm_exec_plan_attributes)
+	BEGIN;
+		SELECT @query_ts = SYSUTCDATETIME();
+		SELECT dmv = CONVERT(char(49), 'sys.dm_exec_plan_attributes')+CHAR(31)
+			, N'▓' [▓], *
+		FROM #dm_exec_plan_attributes;
+		EXEC #log 'Query: #dm_exec_plan_attributes', @query_ts, @@ROWCOUNT;
+	END;
+
+	EXEC #log 'Completed section: Query plan and text', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Query Store';
+	EXEC #log 'Starting section: Query Store';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	IF EXISTS (SELECT * FROM #qs_variables WHERE query_id IS NOT NULL AND plan_id IS NOT NULL)
 	BEGIN;
 		IF EXISTS (SELECT * FROM #query_store_query)
 		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
 			SELECT dmv = CONVERT(char(49), 'sys.query_store_query')+CHAR(31), N'▓' [▓]
 				, batch_sql_handle_match              = CASE q.batch_sql_handle              WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
 				, last_compile_batch_sql_handle_match = CASE q.last_compile_batch_sql_handle WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
@@ -827,18 +933,26 @@ BEGIN;
 				, qh                                  = IIF(q.query_hash = v.query_hash, N'☑️', '')
 				, hh                                  = IIF(q.batch_sql_handle = q.last_compile_batch_sql_handle OR (q.batch_sql_handle IS NULL AND q.last_compile_batch_sql_handle IS NULL), N'☑️', '')
 				, N'▓ batch_sql_handle ->' [▓]
-				, sql_text                            = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + x.sql_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE x.sql_text IS NOT NULL FOR XML PATH(''), TYPE)
+				, sql_text                            = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + x.sql_text  + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE x.sql_text  IS NOT NULL FOR XML PATH(''), TYPE)
 				, stmt_text                           = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + x.stmt_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE x.stmt_text IS NOT NULL FOR XML PATH(''), TYPE)
 				, N'▓ last_compile_batch_sql_handle ->' [▓]
-				, sql_text                            = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + y.sql_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE y.sql_text IS NOT NULL FOR XML PATH(''), TYPE)
+				, sql_text                            = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + y.sql_text  + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE y.sql_text  IS NOT NULL FOR XML PATH(''), TYPE)
 				, stmt_text                           = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + y.stmt_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE y.stmt_text IS NOT NULL FOR XML PATH(''), TYPE)
-				, N'▓' [▓], q.query_id, q.query_text_id, q.context_settings_id, q.[object_id], q.batch_sql_handle, q.query_hash, q.is_internal_query, q.query_parameterization_type, q.query_parameterization_type_desc, q.initial_compile_start_time, q.last_compile_start_time, q.last_execution_time, q.last_compile_batch_sql_handle, q.last_compile_batch_offset_start, q.last_compile_batch_offset_end, q.count_compiles, q.is_clouddb_internal_query
-				, N'▓' [▓], q.avg_compile_duration, q.last_compile_duration
-				, N'▓' [▓], q.avg_bind_duration, q.last_bind_duration
-				, N'▓' [▓], q.avg_bind_cpu_time, q.last_bind_cpu_time
-				, N'▓' [▓], q.avg_optimize_duration, q.last_optimize_duration
-				, N'▓' [▓], q.avg_optimize_cpu_time, q.last_optimize_cpu_time
-				, N'▓' [▓], q.avg_compile_memory_kb, q.last_compile_memory_kb, q.max_compile_memory_kb
+				, N'▓' [▓], q.query_id, q.query_text_id, q.context_settings_id, q.[object_id], q.batch_sql_handle, q.query_hash, q.is_internal_query, q.query_parameterization_type, q.query_parameterization_type_desc, q.initial_compile_start_time, q.count_compiles, q.is_clouddb_internal_query, q.last_execution_time
+				, N'▓' [▓], q.last_compile_start_time, q.last_compile_batch_sql_handle, q.last_compile_batch_offset_start, q.last_compile_batch_offset_end
+				, N'▓ Compile Duration ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(q.avg_compile_duration		,'N2'), MAX(LEN(FORMAT(q.avg_compile_duration	,'N2'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(q.last_compile_duration	,'N0'), MAX(LEN(FORMAT(q.last_compile_duration	,'N0'))) OVER ())
+				, N'▓ Bind Duration ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(q.avg_bind_duration		,'N2'), MAX(LEN(FORMAT(q.avg_bind_duration		,'N2'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(q.last_bind_duration		,'N0'), MAX(LEN(FORMAT(q.last_bind_duration		,'N0'))) OVER ())
+				, N'▓ Bind CPU Time ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(q.avg_bind_cpu_time		,'N2'), MAX(LEN(FORMAT(q.avg_bind_cpu_time		,'N2'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(q.last_bind_cpu_time		,'N0'), MAX(LEN(FORMAT(q.last_bind_cpu_time		,'N0'))) OVER ())
+				, N'▓ Optimize Duration ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(q.avg_optimize_duration	,'N2'), MAX(LEN(FORMAT(q.avg_optimize_duration	,'N2'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(q.last_optimize_duration	,'N0'), MAX(LEN(FORMAT(q.last_optimize_duration	,'N0'))) OVER ())
+				, N'▓ Optimize CPU Time ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(q.avg_optimize_cpu_time	,'N2'), MAX(LEN(FORMAT(q.avg_optimize_cpu_time	,'N2'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(q.last_optimize_cpu_time	,'N0'), MAX(LEN(FORMAT(q.last_optimize_cpu_time	,'N0'))) OVER ())
+				, N'▓ Compile Memory KB ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(q.avg_compile_memory_kb	,'N2'), MAX(LEN(FORMAT(q.avg_compile_memory_kb	,'N2'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(q.last_compile_memory_kb	,'N0'), MAX(LEN(FORMAT(q.last_compile_memory_kb	,'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(q.max_compile_memory_kb	,'N0'), MAX(LEN(FORMAT(q.max_compile_memory_kb	,'N0'))) OVER ())
 			FROM #query_store_query q
 				CROSS JOIN #variables v
 				OUTER APPLY sys.dm_exec_sql_text(q.batch_sql_handle) t1
@@ -852,10 +966,12 @@ BEGIN;
 						, stmt_text = SUBSTRING(t2.[text], q.last_compile_batch_offset_start/2+1, IIF(q.last_compile_batch_offset_end = -1, DATALENGTH(t2.[text]), (q.last_compile_batch_offset_end-q.last_compile_batch_offset_start)/2+1))
 				) y
 			ORDER BY q.last_compile_batch_offset_start;
+			EXEC #log 'Query: #query_store_query', @query_ts, @@ROWCOUNT;
 		END;
 
 		IF EXISTS (SELECT * FROM #query_store_plan)
 		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
 			SELECT dmv = CONVERT(char(49), 'sys.query_store_plan')+CHAR(31)
 				, N'▓' [▓]
 					, plan_id, query_id, plan_group_id, engine_version, [compatibility_level], query_plan_hash
@@ -865,57 +981,121 @@ BEGIN;
 					, last_compile_start_time, last_execution_time, avg_compile_duration, last_compile_duration
 					, plan_forcing_type_desc, has_compile_replay_script, is_optimized_plan_forcing_disabled
 			FROM #query_store_plan;
+			EXEC #log 'Query: #query_store_plan', @query_ts, @@ROWCOUNT;
 		END;
 
 		IF EXISTS (SELECT * FROM #query_store_runtime_stats)
 		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
 			SELECT dmv = CONVERT(char(49), 'sys.query_store_runtime_stats')+CHAR(31), N'▓' [▓]
 				, avg_duration = CONCAT(FORMAT(avg_duration/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MICROSECOND, avg_duration, CONVERT(datetime2,'0001-01-01')),'HH:mm:ss.fff'))
 				, avg_memory_grant_mb = CONVERT(decimal(12,3), avg_query_max_used_memory * 8.0 / 1024.0)
 				, N'▓' [▓], runtime_stats_id, plan_id, runtime_stats_interval_id, execution_type_desc, first_execution_time, last_execution_time, count_executions, replica_group_id
-				, N'▓' [▓]
-					, avg_duration_sec = CONVERT(decimal(10,3), avg_duration / 1000000.0)
-					, last_duration_sec = CONVERT(decimal(10,3), last_duration / 1000000.0)
-					, min_duration_sec = CONVERT(decimal(10,3), min_duration / 1000000.0)
-					, max_duration_sec = CONVERT(decimal(10,3), [max_duration] / 1000000.0)
-					, stdev_duration_sec = CONVERT(decimal(10,3), stdev_duration / 1000000.0)
-				, N'▓' [▓]
-					, avg_cpu_time_sec = CONVERT(decimal(10,3), avg_cpu_time / 1000000.0)
-					, last_cpu_time_sec = CONVERT(decimal(10,3), last_cpu_time / 1000000.0)
-					, min_cpu_time_sec = CONVERT(decimal(10,3), min_cpu_time / 1000000.0)
-					, max_cpu_time_sec = CONVERT(decimal(10,3), max_cpu_time / 1000000.0)
-					, stdev_cpu_time_sec = CONVERT(decimal(10,3), stdev_cpu_time / 1000000.0)
-				, N'▓' [▓], avg_logical_io_reads, last_logical_io_reads, min_logical_io_reads, max_logical_io_reads, stdev_logical_io_reads
-				, N'▓' [▓], avg_logical_io_writes, last_logical_io_writes, min_logical_io_writes, max_logical_io_writes, stdev_logical_io_writes
-				, N'▓' [▓], avg_physical_io_reads, last_physical_io_reads, min_physical_io_reads, max_physical_io_reads, stdev_physical_io_reads
-				, N'▓' [▓], avg_clr_time, last_clr_time, min_clr_time, max_clr_time, stdev_clr_time
-				, N'▓' [▓], avg_dop, last_dop, min_dop, max_dop, stdev_dop
-				, N'▓' [▓], avg_query_max_used_memory, last_query_max_used_memory, min_query_max_used_memory, max_query_max_used_memory, stdev_query_max_used_memory
-				, N'▓' [▓], avg_rowcount, last_rowcount, min_rowcount, max_rowcount, stdev_rowcount
-				, N'▓' [▓], avg_num_physical_io_reads, last_num_physical_io_reads, min_num_physical_io_reads, max_num_physical_io_reads, stdev_num_physical_io_reads
-				, N'▓' [▓], avg_log_bytes_used, last_log_bytes_used, min_log_bytes_used, max_log_bytes_used, stdev_log_bytes_used
-				, N'▓' [▓], avg_tempdb_space_used, last_tempdb_space_used, min_tempdb_space_used, max_tempdb_space_used, stdev_tempdb_space_used
-				, N'▓' [▓], avg_page_server_io_reads, last_page_server_io_reads, min_page_server_io_reads, max_page_server_io_reads, stdev_page_server_io_reads
+													-- Yes, it's ugly, get over it. If you don't like it, build a GUI for me 😄
+				, N'▓ Duration (sec) ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_duration	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(avg_duration		/ 1000000.0	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_duration	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(last_duration	/ 1000000.0	, 'N2'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_duration	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(min_duration		/ 1000000.0	, 'N2'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT([max_duration]	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT([max_duration]	/ 1000000.0	, 'N2'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_duration	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(stdev_duration	/ 1000000.0	, 'N2'))) OVER ())
+				, N'▓ CPU Time (sec) ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_cpu_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(avg_cpu_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_cpu_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(last_cpu_time	/ 1000000.0	, 'N2'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_cpu_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(min_cpu_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_cpu_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(max_cpu_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_cpu_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(stdev_cpu_time	/ 1000000.0	, 'N2'))) OVER ())
+				, N'▓ Logical IO Reads ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_logical_io_reads		, 'N2'),	MAX(LEN(FORMAT(avg_logical_io_reads			, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_logical_io_reads		, 'N0'),	MAX(LEN(FORMAT(last_logical_io_reads		, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_logical_io_reads		, 'N0'),	MAX(LEN(FORMAT(min_logical_io_reads			, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_logical_io_reads		, 'N0'),	MAX(LEN(FORMAT(max_logical_io_reads			, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_logical_io_reads		, 'N2'),	MAX(LEN(FORMAT(stdev_logical_io_reads		, 'N2'))) OVER ())
+				, N'▓ Logical IO Writes ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_logical_io_writes		, 'N2'),	MAX(LEN(FORMAT(avg_logical_io_writes		, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_logical_io_writes		, 'N0'),	MAX(LEN(FORMAT(last_logical_io_writes		, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_logical_io_writes		, 'N0'),	MAX(LEN(FORMAT(min_logical_io_writes		, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_logical_io_writes		, 'N0'),	MAX(LEN(FORMAT(max_logical_io_writes		, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_logical_io_writes	, 'N2'),	MAX(LEN(FORMAT(stdev_logical_io_writes		, 'N2'))) OVER ())
+				, N'▓ Physical IO Reads ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_physical_io_reads		, 'N2'),	MAX(LEN(FORMAT(avg_physical_io_reads		, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_physical_io_reads		, 'N0'),	MAX(LEN(FORMAT(last_physical_io_reads		, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_physical_io_reads		, 'N0'),	MAX(LEN(FORMAT(min_physical_io_reads		, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_physical_io_reads		, 'N0'),	MAX(LEN(FORMAT(max_physical_io_reads		, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_physical_io_reads	, 'N2'),	MAX(LEN(FORMAT(stdev_physical_io_reads		, 'N2'))) OVER ())
+				, N'▓ CLR Time ->' [▓]				, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_clr_time				, 'N2'),	MAX(LEN(FORMAT(avg_clr_time					, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_clr_time				, 'N0'),	MAX(LEN(FORMAT(last_clr_time				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_clr_time				, 'N0'),	MAX(LEN(FORMAT(min_clr_time					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_clr_time				, 'N0'),	MAX(LEN(FORMAT(max_clr_time					, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_clr_time				, 'N2'),	MAX(LEN(FORMAT(stdev_clr_time				, 'N2'))) OVER ())
+				, N'▓ DOP ->' [▓]					, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_dop					, 'N2'),	MAX(LEN(FORMAT(avg_dop						, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_dop					, 'N0'),	MAX(LEN(FORMAT(last_dop						, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_dop					, 'N0'),	MAX(LEN(FORMAT(min_dop						, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_dop					, 'N0'),	MAX(LEN(FORMAT(max_dop						, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_dop					, 'N2'),	MAX(LEN(FORMAT(stdev_dop					, 'N2'))) OVER ())
+				, N'▓ Query Max Used Memory ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_query_max_used_memory	, 'N2'),	MAX(LEN(FORMAT(avg_query_max_used_memory	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_query_max_used_memory	, 'N0'),	MAX(LEN(FORMAT(last_query_max_used_memory	, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_query_max_used_memory	, 'N0'),	MAX(LEN(FORMAT(min_query_max_used_memory	, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_query_max_used_memory	, 'N0'),	MAX(LEN(FORMAT(max_query_max_used_memory	, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_query_max_used_memory, 'N2'),	MAX(LEN(FORMAT(stdev_query_max_used_memory	, 'N2'))) OVER ())
+				, N'▓ Row Count ->' [▓]				, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_rowcount				, 'N2'),	MAX(LEN(FORMAT(avg_rowcount					, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_rowcount				, 'N0'),	MAX(LEN(FORMAT(last_rowcount				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_rowcount				, 'N0'),	MAX(LEN(FORMAT(min_rowcount					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_rowcount				, 'N0'),	MAX(LEN(FORMAT(max_rowcount					, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_rowcount				, 'N2'),	MAX(LEN(FORMAT(stdev_rowcount				, 'N2'))) OVER ())
+				, N'▓ Num Physical IO Reads ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_num_physical_io_reads	, 'N2'),	MAX(LEN(FORMAT(avg_num_physical_io_reads	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_num_physical_io_reads	, 'N0'),	MAX(LEN(FORMAT(last_num_physical_io_reads	, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_num_physical_io_reads	, 'N0'),	MAX(LEN(FORMAT(min_num_physical_io_reads	, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_num_physical_io_reads	, 'N0'),	MAX(LEN(FORMAT(max_num_physical_io_reads	, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_num_physical_io_reads, 'N2'),	MAX(LEN(FORMAT(stdev_num_physical_io_reads	, 'N2'))) OVER ())
+				, N'▓ Log Bytes Used ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_log_bytes_used			, 'N2'),	MAX(LEN(FORMAT(avg_log_bytes_used			, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_log_bytes_used		, 'N0'),	MAX(LEN(FORMAT(last_log_bytes_used			, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_log_bytes_used			, 'N0'),	MAX(LEN(FORMAT(min_log_bytes_used			, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_log_bytes_used			, 'N0'),	MAX(LEN(FORMAT(max_log_bytes_used			, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_log_bytes_used		, 'N2'),	MAX(LEN(FORMAT(stdev_log_bytes_used			, 'N2'))) OVER ())
+				, N'▓ TempDB Space Used ->' [▓]		, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_tempdb_space_used		, 'N2'),	MAX(LEN(FORMAT(avg_tempdb_space_used		, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_tempdb_space_used		, 'N0'),	MAX(LEN(FORMAT(last_tempdb_space_used		, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_tempdb_space_used		, 'N0'),	MAX(LEN(FORMAT(min_tempdb_space_used		, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_tempdb_space_used		, 'N0'),	MAX(LEN(FORMAT(max_tempdb_space_used		, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_tempdb_space_used	, 'N2'),	MAX(LEN(FORMAT(stdev_tempdb_space_used		, 'N2'))) OVER ())
+				, N'▓ Page Server IO Reads ->' [▓]	, [avg]		= RIGHT(SPACE(50)+FORMAT(avg_page_server_io_reads	, 'N2'),	MAX(LEN(FORMAT(avg_page_server_io_reads		, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(last_page_server_io_reads	, 'N0'),	MAX(LEN(FORMAT(last_page_server_io_reads	, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(min_page_server_io_reads	, 'N0'),	MAX(LEN(FORMAT(min_page_server_io_reads		, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(max_page_server_io_reads	, 'N0'),	MAX(LEN(FORMAT(max_page_server_io_reads		, 'N0'))) OVER ())
+													, [stdev]	= RIGHT(SPACE(50)+FORMAT(stdev_page_server_io_reads	, 'N2'),	MAX(LEN(FORMAT(stdev_page_server_io_reads	, 'N2'))) OVER ())
 			FROM #query_store_runtime_stats
 			ORDER BY last_execution_time DESC;
+			EXEC #log 'Query: #query_store_runtime_stats', @query_ts, @@ROWCOUNT;
 		END;
 
-		IF EXISTS (SELECT * FROM #query_store_wait_stats) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.query_store_wait_stats')+CHAR(31), N'▓' [▓], * FROM #query_store_wait_stats ORDER BY runtime_stats_interval_id, wait_category; END;
+		IF EXISTS (SELECT * FROM #query_store_wait_stats)
+		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
+			SELECT dmv = CONVERT(char(49), 'sys.query_store_wait_stats')+CHAR(31)
+				, N'▓' [▓], *
+			FROM #query_store_wait_stats
+			ORDER BY runtime_stats_interval_id, wait_category;
+			EXEC #log 'Query: #query_store_wait_stats', @query_ts, @@ROWCOUNT;
+		END;
 
-		IF EXISTS (SELECT * FROM #query_store_plan_feedback) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.query_store_plan_feedback')+CHAR(31), N'▓' [▓], * FROM #query_store_plan_feedback; END;
+		IF EXISTS (SELECT * FROM #query_store_plan_feedback)
+		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
+			SELECT dmv = CONVERT(char(49), 'sys.query_store_plan_feedback')+CHAR(31)
+				, N'▓' [▓], *
+			FROM #query_store_plan_feedback;
+			EXEC #log 'Query: #query_store_plan_feedback', @query_ts, @@ROWCOUNT;
+		END;
 
 		IF EXISTS (SELECT * FROM #query_store_query_variant)
 		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
 			SELECT dmv = CONVERT(char(49), 'sys.query_store_query_variant')+CHAR(31)
 				, N'▓' [▓], x.*
 				, N'▓' [▓], variant_options = SUBSTRING(vqt.query_sql_text, CHARINDEX('option (PLAN PER VALUE(', vqt.query_sql_text), LEN(vqt.query_sql_text))
 			FROM #query_store_query_variant x
 				LEFT JOIN sys.query_store_query vq ON vq.query_id = x.query_variant_query_id
 				LEFT JOIN sys.query_store_query_text vqt ON vqt.query_text_id = vq.query_text_id;
+			EXEC #log 'Query: #query_store_query_variant', @query_ts, @@ROWCOUNT;
 		END;
 
 		IF EXISTS (SELECT * FROM #dm_db_missing_index_group_stats_query)
 		BEGIN;
+			SELECT @query_ts = SYSUTCDATETIME();
 			SELECT dmv = CONVERT(char(49), 'sys.dm_db_missing_index_group_stats_query')+CHAR(31), N'▓' [▓]
 				, last_sql_handle			= CASE q.last_sql_handle           WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
 				, last_statement_sql_handle	= CASE q.last_statement_sql_handle WHEN v.[sql_handle] THEN '@sql_handle' WHEN v.stmt_sql_handle THEN '@stmt_sql_handle' ELSE NULL END
@@ -925,27 +1105,29 @@ BEGIN;
 				, N'▓ last_sql_handle ->' [▓]
 				, sql_text					= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + x.sql_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE x.sql_text IS NOT NULL FOR XML PATH(''), TYPE)
 				, stmt_text					= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + x.stmt_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE x.stmt_text IS NOT NULL FOR XML PATH(''), TYPE)
-				, N'▓ last_statement_sql_handle ->' [▓]
-				, stmt_text					= (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + qt.query_sql_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE qt.query_sql_text IS NOT NULL FOR XML PATH(''), TYPE)
 				, N'▓' [▓], q.*
 				, N'▓' [▓], id.*
 			FROM #dm_db_missing_index_group_stats_query q
 				CROSS JOIN #variables v
 				LEFT JOIN sys.dm_db_missing_index_groups ig ON ig.index_group_handle = q.group_handle
 				LEFT JOIN sys.dm_db_missing_index_details id ON id.index_handle = ig.index_handle
-				LEFT JOIN sys.query_store_query_text qt ON qt.statement_sql_handle = q.last_statement_sql_handle
 				OUTER APPLY sys.dm_exec_sql_text(q.last_sql_handle) t1
 				CROSS APPLY (
 					SELECT sql_text = t1.[text]
 						, stmt_text = SUBSTRING(t1.[text], q.last_statement_start_offset/2+1, IIF(q.last_statement_end_offset = -1, DATALENGTH(t1.[text]), (q.last_statement_end_offset-q.last_statement_start_offset)/2+1))
 				) x
 			ORDER BY q.avg_user_impact DESC;
+			EXEC #log 'Query: #dm_db_missing_index_group_stats_query', @query_ts, @@ROWCOUNT;
 		END;
 	END;
+
+	EXEC #log 'Completed section: Query Store', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Stats views';
+	EXEC #log 'Starting section: Stats views';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	IF EXISTS (SELECT * FROM #dm_exec_query_stats)
 	BEGIN;
@@ -958,37 +1140,82 @@ BEGIN;
 				, avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MILLISECOND, x.total_elapsed_time/(x.execution_count*1.0), 0),'HH:mm:ss.fff')) -- TODO: Validate accuracy - Finding this to be inaccurate fairly often due to "incorrect" execution counts (too low)
 				, avg_grant_mb = CONVERT(decimal(15,3), x.total_grant_kb / x.execution_count / 1024.0)
 			, N'▓' [▓], x.[sql_handle], x.statement_start_offset, x.statement_end_offset, x.plan_generation_num, x.plan_handle, x.creation_time, x.last_execution_time, x.execution_count, x.query_hash, x.query_plan_hash, x.statement_sql_handle, x.statement_context_id
-			, N'▓' [▓]
-				, total_worker_time_sec = CONVERT(decimal(10,3), x.total_worker_time / 1000000.0)
-				, last_worker_time_sec = CONVERT(decimal(10,3), x.last_worker_time / 1000000.0)
-				, min_worker_time_sec = CONVERT(decimal(10,3), x.min_worker_time / 1000000.0)
-				, max_worker_time_sec = CONVERT(decimal(10,3), x.max_worker_time / 1000000.0)
-			, N'▓' [▓], x.total_physical_reads, x.last_physical_reads, x.min_physical_reads, x.max_physical_reads
-			, N'▓' [▓], x.total_logical_writes, x.last_logical_writes, x.min_logical_writes, x.max_logical_writes
-			, N'▓' [▓], x.total_logical_reads, x.last_logical_reads, x.min_logical_reads, x.max_logical_reads
-			, N'▓' [▓]
-				, total_clr_time_sec = CONVERT(decimal(10,3), x.total_clr_time / 1000000.0)
-				, last_clr_time_sec = CONVERT(decimal(10,3), x.last_clr_time / 1000000.0)
-				, min_clr_time_sec = CONVERT(decimal(10,3), x.min_clr_time / 1000000.0)
-				, max_clr_time_sec = CONVERT(decimal(10,3), x.max_clr_time / 1000000.0)
-			, N'▓' [▓]
-				, total_elapsed_time_sec = CONVERT(decimal(10,3), x.total_elapsed_time / 1000000.0)
-				, last_elapsed_time_sec = CONVERT(decimal(10,3), x.last_elapsed_time / 1000000.0)
-				, min_elapsed_time_sec = CONVERT(decimal(10,3), x.min_elapsed_time / 1000000.0)
-				, max_elapsed_time_sec = CONVERT(decimal(10,3), x.max_elapsed_time / 1000000.0)
-			, N'▓' [▓], x.total_rows, x.last_rows, x.min_rows, x.max_rows
-			, N'▓' [▓], x.total_dop, x.last_dop, x.min_dop, x.max_dop
-			, N'▓' [▓], x.total_grant_kb, x.last_grant_kb, x.min_grant_kb, x.max_grant_kb
-			, N'▓' [▓], x.total_used_grant_kb, x.last_used_grant_kb, x.min_used_grant_kb, x.max_used_grant_kb
-			, N'▓' [▓], x.total_ideal_grant_kb, x.last_ideal_grant_kb, x.min_ideal_grant_kb, x.max_ideal_grant_kb
-			, N'▓' [▓], x.total_reserved_threads, x.last_reserved_threads, x.min_reserved_threads, x.max_reserved_threads
-			, N'▓' [▓], x.total_used_threads, x.last_used_threads, x.min_used_threads, x.max_used_threads
-			, N'▓' [▓], x.total_columnstore_segment_reads, x.last_columnstore_segment_reads, x.min_columnstore_segment_reads, x.max_columnstore_segment_reads
-			, N'▓' [▓], x.total_columnstore_segment_skips, x.last_columnstore_segment_skips, x.min_columnstore_segment_skips, x.max_columnstore_segment_skips
-			, N'▓' [▓], x.total_spills, x.last_spills, x.min_spills, x.max_spills
-			, N'▓' [▓], x.total_num_physical_reads, x.last_num_physical_reads, x.min_num_physical_reads, x.max_num_physical_reads
-			, N'▓' [▓], x.total_page_server_reads, x.last_page_server_reads, x.min_page_server_reads, x.max_page_server_reads
-			, N'▓' [▓], x.total_num_page_server_reads, x.last_num_page_server_reads, x.min_num_page_server_reads, x.max_num_page_server_reads
+			, N'▓ Worker Time ->' [▓]				, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_worker_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.total_worker_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_worker_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.last_worker_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_worker_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.min_worker_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_worker_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.max_worker_time		/ 1000000.0	, 'N2'))) OVER ())
+			, N'▓ Physical Reads ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_physical_reads				, 'N0'),	MAX(LEN(FORMAT(x.total_physical_reads				, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_physical_reads				, 'N0'),	MAX(LEN(FORMAT(x.last_physical_reads				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_physical_reads				, 'N0'),	MAX(LEN(FORMAT(x.min_physical_reads					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_physical_reads				, 'N0'),	MAX(LEN(FORMAT(x.max_physical_reads					, 'N0'))) OVER ())
+			, N'▓ Logical Writes ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_logical_writes				, 'N0'),	MAX(LEN(FORMAT(x.total_logical_writes				, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_logical_writes				, 'N0'),	MAX(LEN(FORMAT(x.last_logical_writes				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_logical_writes				, 'N0'),	MAX(LEN(FORMAT(x.min_logical_writes					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_logical_writes				, 'N0'),	MAX(LEN(FORMAT(x.max_logical_writes					, 'N0'))) OVER ())
+			, N'▓ Logical Reads ->' [▓]				, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_logical_reads				, 'N0'),	MAX(LEN(FORMAT(x.total_logical_reads				, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_logical_reads				, 'N0'),	MAX(LEN(FORMAT(x.last_logical_reads					, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_logical_reads				, 'N0'),	MAX(LEN(FORMAT(x.min_logical_reads					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_logical_reads				, 'N0'),	MAX(LEN(FORMAT(x.max_logical_reads					, 'N0'))) OVER ())
+			, N'▓ CLR Time (sec) ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_clr_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.total_clr_time			/ 1000000.0	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_clr_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.last_clr_time			/ 1000000.0	, 'N2'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_clr_time			/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.min_clr_time			/ 1000000.0	, 'N2'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_clr_time			/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.max_clr_time			/ 1000000.0	, 'N2'))) OVER ())
+			, N'▓ Elapsed Time (sec) ->' [▓]		, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_elapsed_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.total_elapsed_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_elapsed_time	/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.last_elapsed_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_elapsed_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.min_elapsed_time		/ 1000000.0	, 'N2'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_elapsed_time		/ 1000000.0	, 'N2'),	MAX(LEN(FORMAT(x.max_elapsed_time		/ 1000000.0	, 'N2'))) OVER ())
+			, N'▓ Rows ->' [▓]						, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_rows						, 'N0'),	MAX(LEN(FORMAT(x.total_rows							, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_rows						, 'N0'),	MAX(LEN(FORMAT(x.last_rows							, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_rows							, 'N0'),	MAX(LEN(FORMAT(x.min_rows							, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_rows							, 'N0'),	MAX(LEN(FORMAT(x.max_rows							, 'N0'))) OVER ())
+			, N'▓ DOP ->' [▓]						, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_dop						, 'N0'),	MAX(LEN(FORMAT(x.total_dop							, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_dop							, 'N0'),	MAX(LEN(FORMAT(x.last_dop							, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_dop							, 'N0'),	MAX(LEN(FORMAT(x.min_dop							, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_dop							, 'N0'),	MAX(LEN(FORMAT(x.max_dop							, 'N0'))) OVER ())
+			, N'▓ Grant KB ->' [▓]					, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_grant_kb					, 'N0'),	MAX(LEN(FORMAT(x.total_grant_kb						, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_grant_kb					, 'N0'),	MAX(LEN(FORMAT(x.last_grant_kb						, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_grant_kb						, 'N0'),	MAX(LEN(FORMAT(x.min_grant_kb						, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_grant_kb						, 'N0'),	MAX(LEN(FORMAT(x.max_grant_kb						, 'N0'))) OVER ())
+			, N'▓ Used Grant KB ->' [▓]				, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_used_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.total_used_grant_kb				, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_used_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.last_used_grant_kb					, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_used_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.min_used_grant_kb					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_used_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.max_used_grant_kb					, 'N0'))) OVER ())
+			, N'▓ Ideal Grant KB ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_ideal_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.total_ideal_grant_kb				, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_ideal_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.last_ideal_grant_kb				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_ideal_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.min_ideal_grant_kb					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_ideal_grant_kb				, 'N0'),	MAX(LEN(FORMAT(x.max_ideal_grant_kb					, 'N0'))) OVER ())
+			, N'▓ Reserved Threads ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_reserved_threads			, 'N0'),	MAX(LEN(FORMAT(x.total_reserved_threads				, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_reserved_threads			, 'N0'),	MAX(LEN(FORMAT(x.last_reserved_threads				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_reserved_threads				, 'N0'),	MAX(LEN(FORMAT(x.min_reserved_threads				, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_reserved_threads				, 'N0'),	MAX(LEN(FORMAT(x.max_reserved_threads				, 'N0'))) OVER ())
+			, N'▓ Used Threads ->' [▓]				, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_used_threads				, 'N0'),	MAX(LEN(FORMAT(x.total_used_threads					, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_used_threads				, 'N0'),	MAX(LEN(FORMAT(x.last_used_threads					, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_used_threads					, 'N0'),	MAX(LEN(FORMAT(x.min_used_threads					, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_used_threads					, 'N0'),	MAX(LEN(FORMAT(x.max_used_threads					, 'N0'))) OVER ())
+			, N'▓ Columnstore Segment Reads ->' [▓]	, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_columnstore_segment_reads	, 'N0'),	MAX(LEN(FORMAT(x.total_columnstore_segment_reads	, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_columnstore_segment_reads	, 'N0'),	MAX(LEN(FORMAT(x.last_columnstore_segment_reads		, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_columnstore_segment_reads	, 'N0'),	MAX(LEN(FORMAT(x.min_columnstore_segment_reads		, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_columnstore_segment_reads	, 'N0'),	MAX(LEN(FORMAT(x.max_columnstore_segment_reads		, 'N0'))) OVER ())
+			, N'▓ Columnstore Segment Skips ->' [▓]	, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_columnstore_segment_skips	, 'N0'),	MAX(LEN(FORMAT(x.total_columnstore_segment_skips	, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_columnstore_segment_skips	, 'N0'),	MAX(LEN(FORMAT(x.last_columnstore_segment_skips		, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_columnstore_segment_skips	, 'N0'),	MAX(LEN(FORMAT(x.min_columnstore_segment_skips		, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_columnstore_segment_skips	, 'N0'),	MAX(LEN(FORMAT(x.max_columnstore_segment_skips		, 'N0'))) OVER ())
+			, N'▓ Spills ->' [▓]					, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_spills						, 'N0'),	MAX(LEN(FORMAT(x.total_spills						, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_spills						, 'N0'),	MAX(LEN(FORMAT(x.last_spills						, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_spills						, 'N0'),	MAX(LEN(FORMAT(x.min_spills							, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_spills						, 'N0'),	MAX(LEN(FORMAT(x.max_spills							, 'N0'))) OVER ())
+			, N'▓ Num Physical Reads ->' [▓]		, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_num_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.total_num_physical_reads			, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_num_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.last_num_physical_reads			, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_num_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.min_num_physical_reads				, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_num_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.max_num_physical_reads				, 'N0'))) OVER ())
+			, N'▓ Page Server Reads ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_page_server_reads			, 'N0'),	MAX(LEN(FORMAT(x.total_page_server_reads			, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_page_server_reads			, 'N0'),	MAX(LEN(FORMAT(x.last_page_server_reads				, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_page_server_reads			, 'N0'),	MAX(LEN(FORMAT(x.min_page_server_reads				, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_page_server_reads			, 'N0'),	MAX(LEN(FORMAT(x.max_page_server_reads				, 'N0'))) OVER ())
+			, N'▓ Num Page Server Reads ->' [▓]		, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_num_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.total_num_page_server_reads		, 'N0'))) OVER ())
+													, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_num_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.last_num_page_server_reads			, 'N0'))) OVER ())
+													, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_num_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.min_num_page_server_reads			, 'N0'))) OVER ())
+													, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_num_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.max_num_page_server_reads			, 'N0'))) OVER ())
 		FROM #dm_exec_query_stats x
 			CROSS JOIN #variables v
 			OUTER APPLY sys.dm_exec_sql_text(v.[sql_handle]) st
@@ -1003,15 +1230,42 @@ BEGIN;
 			, sh = IIF(x.[sql_handle] = v.[sql_handle], N'☑️', '')
 			, obj = IIF(x.database_id = v.[db_id] AND x.[object_id] = v.[object_id], N'☑️', '')
 			, N'▓' [▓], x.dmv, x.database_id, x.[object_id], x.[type], x.[type_desc], x.[sql_handle], x.plan_handle, x.cached_time, x.last_execution_time, x.execution_count
-			, N'▓' [▓], x.total_worker_time, x.last_worker_time, x.min_worker_time, x.max_worker_time
-			, N'▓' [▓], x.total_physical_reads, x.last_physical_reads, x.min_physical_reads, x.max_physical_reads
-			, N'▓' [▓], x.total_logical_writes, x.last_logical_writes, x.min_logical_writes, x.max_logical_writes
-			, N'▓' [▓], x.total_logical_reads, x.last_logical_reads, x.min_logical_reads, x.max_logical_reads
-			, N'▓' [▓], x.total_elapsed_time, x.last_elapsed_time, x.min_elapsed_time, x.max_elapsed_time
-			, N'▓' [▓], x.total_spills, x.last_spills, x.min_spills, x.max_spills
-			, N'▓' [▓], x.total_num_physical_reads, x.last_num_physical_reads, x.min_num_physical_reads, x.max_num_physical_reads
-			, N'▓' [▓], x.total_page_server_reads, x.last_page_server_reads, x.min_page_server_reads, x.max_page_server_reads
-			, N'▓' [▓], x.total_num_page_server_reads, x.last_num_page_server_reads, x.min_num_page_server_reads, x.max_num_page_server_reads
+			, N'▓ Worker Time ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_worker_time			, 'N0'),	MAX(LEN(FORMAT(x.total_worker_time			, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_worker_time				, 'N0'),	MAX(LEN(FORMAT(x.last_worker_time			, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_worker_time				, 'N0'),	MAX(LEN(FORMAT(x.min_worker_time			, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_worker_time				, 'N0'),	MAX(LEN(FORMAT(x.max_worker_time			, 'N0'))) OVER ())
+			, N'▓ Physical Reads ->' [▓]		, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.total_physical_reads		, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.last_physical_reads		, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.min_physical_reads			, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_physical_reads			, 'N0'),	MAX(LEN(FORMAT(x.max_physical_reads			, 'N0'))) OVER ())
+			, N'▓ Logical Writes ->' [▓]		, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_logical_writes			, 'N0'),	MAX(LEN(FORMAT(x.total_logical_writes		, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_logical_writes			, 'N0'),	MAX(LEN(FORMAT(x.last_logical_writes		, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_logical_writes			, 'N0'),	MAX(LEN(FORMAT(x.min_logical_writes			, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_logical_writes			, 'N0'),	MAX(LEN(FORMAT(x.max_logical_writes			, 'N0'))) OVER ())
+			, N'▓ Logical Reads ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_logical_reads			, 'N0'),	MAX(LEN(FORMAT(x.total_logical_reads		, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_logical_reads			, 'N0'),	MAX(LEN(FORMAT(x.last_logical_reads			, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_logical_reads			, 'N0'),	MAX(LEN(FORMAT(x.min_logical_reads			, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_logical_reads			, 'N0'),	MAX(LEN(FORMAT(x.max_logical_reads			, 'N0'))) OVER ())
+			, N'▓ Elapsed Time ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_elapsed_time			, 'N0'),	MAX(LEN(FORMAT(x.total_elapsed_time			, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_elapsed_time			, 'N0'),	MAX(LEN(FORMAT(x.last_elapsed_time			, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_elapsed_time				, 'N0'),	MAX(LEN(FORMAT(x.min_elapsed_time			, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_elapsed_time				, 'N0'),	MAX(LEN(FORMAT(x.max_elapsed_time			, 'N0'))) OVER ())
+			, N'▓ Spills ->' [▓]				, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_spills					, 'N0'),	MAX(LEN(FORMAT(x.total_spills				, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_spills					, 'N0'),	MAX(LEN(FORMAT(x.last_spills				, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_spills					, 'N0'),	MAX(LEN(FORMAT(x.min_spills					, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_spills					, 'N0'),	MAX(LEN(FORMAT(x.max_spills					, 'N0'))) OVER ())
+			, N'▓ Num Physical Reads ->' [▓]	, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_num_physical_reads		, 'N0'),	MAX(LEN(FORMAT(x.total_num_physical_reads	, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_num_physical_reads		, 'N0'),	MAX(LEN(FORMAT(x.last_num_physical_reads	, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_num_physical_reads		, 'N0'),	MAX(LEN(FORMAT(x.min_num_physical_reads		, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_num_physical_reads		, 'N0'),	MAX(LEN(FORMAT(x.max_num_physical_reads		, 'N0'))) OVER ())
+			, N'▓ Page Server Reads ->' [▓]		, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.total_page_server_reads	, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.last_page_server_reads		, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.min_page_server_reads		, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_page_server_reads		, 'N0'),	MAX(LEN(FORMAT(x.max_page_server_reads		, 'N0'))) OVER ())
+			, N'▓ Num Page Server Reads ->' [▓]	, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_num_page_server_reads	, 'N0'),	MAX(LEN(FORMAT(x.total_num_page_server_reads, 'N0'))) OVER ())
+												, [last]	= RIGHT(SPACE(50)+FORMAT(x.last_num_page_server_reads	, 'N0'),	MAX(LEN(FORMAT(x.last_num_page_server_reads	, 'N0'))) OVER ())
+												, [min]		= RIGHT(SPACE(50)+FORMAT(x.min_num_page_server_reads	, 'N0'),	MAX(LEN(FORMAT(x.min_num_page_server_reads	, 'N0'))) OVER ())
+												, [max]		= RIGHT(SPACE(50)+FORMAT(x.max_num_page_server_reads	, 'N0'),	MAX(LEN(FORMAT(x.max_num_page_server_reads	, 'N0'))) OVER ())
 		FROM #stats_tables x
 			CROSS JOIN #variables v;
 
@@ -1023,10 +1277,14 @@ BEGIN;
 			CROSS JOIN #variables v
 		GROUP BY x.dmv;
 	END;
+
+	EXEC #log 'Completed section: Stats views', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Misc';
+	EXEC #log 'Starting section: Misc';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	IF EXISTS (SELECT * FROM #dm_db_session_space_usage) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_db_session_space_usage')+CHAR(31), N'▓' [▓], * FROM #dm_db_session_space_usage; END;
 	IF EXISTS (SELECT * FROM #dm_db_task_space_usage) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_db_task_space_usage')+CHAR(31), N'▓' [▓], * FROM #dm_db_task_space_usage ORDER BY exec_context_id; END;
@@ -1038,26 +1296,61 @@ BEGIN;
 			, granted_memory_gb = FORMAT(granted_memory_kb / 1024.0 / 1024.0, 'N3')
 			, used_memory_gb = FORMAT(used_memory_kb / 1024.0 / 1024.0, 'N3')
 			, max_used_memory_gb = FORMAT(max_used_memory_kb / 1024.0 / 1024.0, 'N3')
-			, N'▓' [▓], *
+			, ideal_memory_gb = FORMAT(ideal_memory_kb / 1024.0 / 1024.0, 'N3')
+			, N'▓' [▓]
+			, *
 		FROM #dm_exec_query_memory_grants;
 	END;
 	IF EXISTS (SELECT * FROM #dm_os_tasks) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_os_tasks')+CHAR(31), N'▓' [▓], * FROM #dm_os_tasks ORDER BY exec_context_id; END;
 	IF EXISTS (SELECT * FROM #dm_os_waiting_tasks) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_os_waiting_tasks')+CHAR(31), N'▓' [▓], * FROM #dm_os_waiting_tasks ORDER BY exec_context_id, blocking_session_id, blocking_exec_context_id; END;
 	IF EXISTS (SELECT * FROM #dm_exec_cursors) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_cursors')+CHAR(31), N'▓' [▓], * FROM #dm_exec_cursors; END;
 	IF EXISTS (SELECT * FROM #dm_exec_xml_handles) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_xml_handles')+CHAR(31), N'▓' [▓], * FROM #dm_exec_xml_handles; END;
+
+	EXEC #log 'Completed section: Misc', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Transaction info';
+	EXEC #log 'Starting section: Transaction info';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	IF EXISTS (SELECT * FROM #dm_tran_session_transactions) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_tran_session_transactions')+CHAR(31), N'▓' [▓], * FROM #dm_tran_session_transactions; END;
 	IF EXISTS (SELECT * FROM #dm_tran_active_transactions) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_tran_active_transactions')+CHAR(31), N'▓' [▓], * FROM #dm_tran_active_transactions; END;
-	IF EXISTS (SELECT * FROM #dm_tran_database_transactions) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_tran_database_transactions')+CHAR(31), N'▓' [▓], * FROM #dm_tran_database_transactions; END;
+	IF EXISTS (SELECT * FROM #dm_tran_database_transactions)
+	BEGIN;
+		SELECT dmv = CONVERT(char(49), 'sys.dm_tran_database_transactions')+CHAR(31)
+			, N'▓' [▓], [database_name] = DB_NAME(database_id)
+			, N'▓' [▓], transaction_id, database_id
+				, begin_time				= database_transaction_begin_time
+				, [type]					= database_transaction_type
+				, [state]					= database_transaction_state
+				, [status]					= database_transaction_status
+				, status2					= database_transaction_status2
+				, log_record_count			= database_transaction_log_record_count
+				, replicate_record_count	= database_transaction_replicate_record_count
+			, N'▓ Log Bytes ->' [▓]
+				, used						= database_transaction_log_bytes_used
+				, reserved					= database_transaction_log_bytes_reserved
+				, used_system				= database_transaction_log_bytes_used_system
+				, reserved_system			= database_transaction_log_bytes_reserved_system
+			, N'▓' [▓]
+				, begin_lsn					= database_transaction_begin_lsn
+				, last_lsn					= database_transaction_last_lsn
+				, most_recent_savepoint_lsn	= database_transaction_most_recent_savepoint_lsn
+				, commit_lsn				= database_transaction_commit_lsn
+				, last_rollback_lsn			= database_transaction_last_rollback_lsn
+				, next_undo_lsn				= database_transaction_next_undo_lsn
+		FROM #dm_tran_database_transactions;
+	END;
 	IF EXISTS (SELECT * FROM #dm_tran_active_snapshot_database_transactions) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_tran_active_snapshot_database_transactions')+CHAR(31), N'▓' [▓], * FROM #dm_tran_active_snapshot_database_transactions; END;
+
+	EXEC #log 'Completed section: Transaction info', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Locks and waits';
+	EXEC #log 'Starting section: Locks and waits';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	IF (OBJECT_ID('tempdb..#dm_db_page_info') IS NOT NULL)
 	BEGIN;
@@ -1166,20 +1459,38 @@ BEGIN;
 					, l.lock_owner_address;
 		END;
 	END;
+
+	EXEC #log 'Completed section: Locks and waits', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
 	EXEC #section 'Latest plans';
+	EXEC #log 'Starting section: Latest plans';
+	SELECT @section_ts = SYSUTCDATETIME();
 
 	IF (OBJECT_ID('tempdb..#dm_exec_query_plan_stats') IS NOT NULL)
 	BEGIN;
-		IF EXISTS (SELECT * FROM #dm_exec_query_plan_stats) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_query_plan_stats')+CHAR(31), N'▓' [▓], * FROM #dm_exec_query_plan_stats; END;
+		IF EXISTS (SELECT * FROM #dm_exec_query_plan_stats)
+		BEGIN;
+			SELECT dmv = CONVERT(char(49), 'sys.dm_exec_query_plan_stats')+CHAR(31)
+				, N'▓' [▓], *
+				, N'▓' [▓], [description] = 'Last known execution plan'
+			FROM #dm_exec_query_plan_stats;
+		END;
 	END;
 
 	IF (OBJECT_ID('tempdb..#last_query_plan') IS NOT NULL)
 	BEGIN;
-		IF EXISTS (SELECT * FROM #last_query_plan) BEGIN; SELECT dmv = CONVERT(char(49), 'sys.dm_exec_query_statistics_xml')+CHAR(31), N'▓' [▓], * FROM #last_query_plan; END;
+		IF EXISTS (SELECT * FROM #last_query_plan)
+		BEGIN;
+			SELECT dmv = CONVERT(char(49), 'sys.dm_exec_query_statistics_xml')+CHAR(31)
+				, N'▓' [▓], *
+				, N'▓' [▓], [description] = 'Last captured live query plan'
+			FROM #last_query_plan;
+		END;
 	END;
+
+	EXEC #log 'Completed section: Latest plans', @section_ts;
 	------------------------------------------------------------
 
 	------------------------------------------------------------
