@@ -1,7 +1,6 @@
 ﻿GO
 /*
 https://learn.microsoft.com/en-us/sql/relational-databases/indexes/tune-nonclustered-missing-index-suggestions
-
 https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-db-missing-index-group-stats-transact-sql
 
 | Column name         | Description                                                                                                        |
@@ -14,12 +13,13 @@ https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-manage
 | avg_total_user_cost | Average cost of the user queries that could be reduced by the index in the group                                   |
 | avg_user_impact     | Average percentage benefit that user queries could experience if this missing index group was implemented          |
 
-SELECT * FROM sys.dm_db_missing_index_columns(5)
+SELECT * FROM sys.dm_db_missing_index_columns(1164)
 SELECT * FROM sys.dm_db_missing_index_details
 SELECT * FROM sys.dm_db_missing_index_group_stats
 SELECT * FROM sys.dm_db_missing_index_group_stats_query
-SELECT * FROM sys.dm_db_missing_index_groups ORDER BY index_group_handle
+SELECT * FROM sys.dm_db_missing_index_groups
 */
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -121,6 +121,8 @@ WITH idx_cols AS (
 	GROUP BY ic.[object_id], ic.index_id
 )
 SELECT IndexGroupHandle = mig.index_group_handle
+	, IndexHandle		= mig.index_handle
+	, ObjectID          = mid.[object_id]
 	, SchemaName		= mid.[schema_name]
 	, ObjectName		= mid.[object_name]
 	, ObjectType		= mid.object_type
