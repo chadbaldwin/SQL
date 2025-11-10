@@ -19,7 +19,6 @@ SELECT x.*, v.*
         WHEN v.BaseType IN ('money','smallmoney') THEN CONVERT(nvarchar(MAX), CONVERT(money, [value]), 2)
         ELSE CONVERT(nvarchar(MAX), [value]) -- Tested OK: bigint, int, smallint, tinyint, bit, decimal, numeric, char, nchar, varchar, nvarchar, xml, uniqueidentifier
       END
-      , 7-v.Scale
 FROM (
               SELECT DT = 'bigint'           , [value] = CONVERT(sql_variant, CONVERT(bigint           , 1234567891011))
     UNION ALL SELECT DT = 'nvarchar(20)'     , [value] = CONVERT(sql_variant, CONVERT(nvarchar(20)     , N'asdf'))
