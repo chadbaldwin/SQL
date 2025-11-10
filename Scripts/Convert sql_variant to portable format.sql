@@ -11,7 +11,7 @@ SELECT x.*, v.*
         WHEN v.BaseType = 'datetime'              THEN FORMAT(CONVERT(datetime, [value]), 'yyyy-MM-dd HH:mm:ss.fff')
         WHEN v.BaseType = 'smalldatetime'         THEN FORMAT(CONVERT(smalldatetime, [value]), 'yyyy-MM-dd HH:mm')
         WHEN v.BaseType = 'datetime2'             THEN LEFT(FORMAT(CONVERT(datetime2, [value]), 'o'), v.[Precision])
-        WHEN v.BaseType = 'datetimeoffset'        THEN STUFF(FORMAT(CONVERT(datetimeoffset, [value]), 'o'), v.[Precision]-6, 7-v.Scale, '')
+        WHEN v.BaseType = 'datetimeoffset'        THEN STUFF(FORMAT(CONVERT(datetimeoffset, [value]), 'o'), v.[Precision]-6, 34-v.[Precision], '')
         WHEN v.BaseType = 'time'                  THEN LEFT(CONVERT(nvarchar(16), [value], 114), v.[Precision])
         WHEN v.BaseType IN ('float','real')       THEN CONVERT(nvarchar(MAX), CONVERT(float, [value]), 3)
         WHEN v.BaseType = 'varbinary'             THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), [value]), 1)
@@ -19,6 +19,7 @@ SELECT x.*, v.*
         WHEN v.BaseType IN ('money','smallmoney') THEN CONVERT(nvarchar(MAX), CONVERT(money, [value]), 2)
         ELSE CONVERT(nvarchar(MAX), [value]) -- Tested OK: bigint, int, smallint, tinyint, bit, decimal, numeric, char, nchar, varchar, nvarchar, xml, uniqueidentifier
       END
+      , 7-v.Scale
 FROM (
               SELECT DT = 'bigint'           , [value] = CONVERT(sql_variant, CONVERT(bigint           , 1234567891011))
     UNION ALL SELECT DT = 'nvarchar(20)'     , [value] = CONVERT(sql_variant, CONVERT(nvarchar(20)     , N'asdf'))
@@ -30,6 +31,7 @@ FROM (
     UNION All SELECT DT = 'smalldatetime'    , [value] = CONVERT(sql_variant, CONVERT(smalldatetime    , SYSUTCDATETIME()))
     UNION All SELECT DT = 'datetimeoffset'   , [value] = CONVERT(sql_variant, CONVERT(datetimeoffset   , SYSDATETIMEOFFSET()))
     UNION All SELECT DT = 'datetimeoffset(3)', [value] = CONVERT(sql_variant, CONVERT(datetimeoffset(3), SYSDATETIMEOFFSET()))
+    UNION All SELECT DT = 'datetimeoffset(0)', [value] = CONVERT(sql_variant, CONVERT(datetimeoffset(0), SYSDATETIMEOFFSET()))
     UNION ALL SELECT DT = 'date'             , [value] = CONVERT(sql_variant, CONVERT(date             , GETDATE()))
     UNION ALL SELECT DT = 'time'             , [value] = CONVERT(sql_variant, CONVERT(time             , GETDATE()))
     UNION ALL SELECT DT = 'time(3)'          , [value] = CONVERT(sql_variant, CONVERT(time(3)          , GETDATE()))
