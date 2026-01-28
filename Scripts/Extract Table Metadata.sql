@@ -50,7 +50,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
             , t.is_remote_data_archive_enabled, t.is_external, t.history_retention_period, t.history_retention_period_unit, t.history_retention_period_unit_desc, t.is_node, t.is_edge
             --
             , [columns] = (
-                SELECT c.[name]
+                SELECT c.column_id, c.[name]
                     , system_type_name = TYPE_NAME(c.system_type_id)
                     , user_type_name = TYPE_NAME(c.user_type_id)
                     , c.max_length, c.[precision], c.scale, c.collation_name, c.is_nullable, c.is_ansi_padded, c.is_rowguidcol, c.is_identity, c.is_computed, c.is_filestream, c.is_replicated, c.is_non_sql_subscribed, c.is_merge_published
@@ -138,7 +138,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                 /* Not including index_id because they can be re-used and can change if a table or indexes are dropped and re-created
                     which can potentially trigger a false change detection.
                 */
-                SELECT i.[name], i.[type], i.[type_desc], i.is_unique
+                SELECT i.index_id, i.[name], i.[type], i.[type_desc], i.is_unique
                     /* Consideration: Changing this section to remove attributes that are not directly related to the parent table object
                         Filegroups and partitions functions should be tracked as their own object
                         Attributes of the filegroups and partition functions are not technically a change to the table itself
@@ -169,8 +169,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                             */
                             , [partition_scheme] = JSON_QUERY((
                                 SELECT [partition_function] = JSON_QUERY((
-                                        /* Excluding `fanout` column because it will cause a detected change any time a boundary/partition is added/removed */
-                                        SELECT pf.[name], pf.[type], pf.[type_desc] /* , pf.fanout */, pf.boundary_value_on_right, pf.is_system
+                                        SELECT pf.[name], pf.[type], pf.[type_desc], pf.fanout, pf.boundary_value_on_right, pf.is_system
                                         /* Not including extended properties as they are irrelevant to the status of the table object */
                                         FROM sys.partition_functions pf
                                         WHERE pf.function_id = ps.function_id
@@ -185,7 +184,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                         FOR JSON AUTO, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
                     ))
                     , i.[ignore_dup_key], i.is_primary_key, i.is_unique_constraint
-                    , i.fill_factor /* Consideration: Adding logic to normalize 100 back to 0 to prevent unecessary change detection */
+                    , i.fill_factor /* Consideration: Adding logic to normalize 100 back to 0 */
                     , i.is_padded, i.is_disabled, i.is_hypothetical, i.is_ignored_in_optimization, i.[allow_row_locks], i.[allow_page_locks], i.has_filter, i.filter_definition, i.[compression_delay], i.suppress_dup_key_messages, i.auto_created
                     --
                     , [index_columns] = (
@@ -195,7 +194,7 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                         FROM sys.index_columns ic
                         WHERE ic.[object_id] = i.[object_id]
                             AND ic.index_id = i.index_id
-                        ORDER BY ic.key_ordinal, ic.index_column_id
+                        ORDER BY ic.index_column_id
                         FOR JSON AUTO, INCLUDE_NULL_VALUES
                     )
                     , [partitions] = (
@@ -244,11 +243,11 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                     )
                 FROM sys.indexes i
                 WHERE i.[object_id] = t.[object_id]
-                ORDER BY i.[name]
+                ORDER BY i.index_id
                 FOR JSON AUTO, INCLUDE_NULL_VALUES
             )
             , [stats] = (
-                /* Placed at the table level because we are only listing custom / user-created stats, which would not have an index record associated with it */
+                /* Placed at the table level because we are only listing user-created stats, which would not have an index associated with it */
                 SELECT st.[name], st.user_created, st.auto_created, st.no_recompute, st.has_filter, st.filter_definition, st.is_temporary, st.is_incremental
                     , [stats_columns] = (
                         SELECT stc.stats_column_id, column_name = COL_NAME(stc.[object_id], stc.column_id)
@@ -332,8 +331,22 @@ SELECT SchemaName        = SCHEMA_NAME(x.[schema_id])
                 FOR JSON AUTO, INCLUDE_NULL_VALUES
             )
             , [triggers] = (
-                /* Excluding fields that only impact the trigger and have no impact on the parent table itself. */
-                SELECT tr.[name], tr.[type], tr.[type_desc], tr.is_disabled/*, tr.is_not_for_replication*/, tr.is_instead_of_trigger
+                SELECT tr.[name], tr.[type], tr.[type_desc], tr.is_disabled, tr.is_not_for_replication, tr.is_instead_of_trigger
+                    , [trigger_events] = (
+                        SELECT [type_desc], is_first, is_last, event_group_type_desc, is_trigger_event
+                        FROM sys.trigger_events te
+                        WHERE te.[object_id] = tr.[object_id]
+                        FOR JSON AUTO, INCLUDE_NULL_VALUES
+                    )
+                    , [extended_properties] = (
+                        SELECT ep.[name], ep.[value]
+                        FROM sys.extended_properties ep
+                        WHERE ep.class = 1
+                            AND ep.major_id = tr.[object_id]
+                            AND ep.minor_id = 0
+                        ORDER BY ep.[name]
+                        FOR JSON AUTO, INCLUDE_NULL_VALUES
+                    )
                 FROM sys.triggers tr
                 WHERE tr.parent_class = 1
                     AND tr.parent_id = t.[object_id]
