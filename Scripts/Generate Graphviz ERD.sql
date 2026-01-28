@@ -21,8 +21,7 @@ CREATE TABLE #root_filter (
 
     Root filter objects will be highlighted in red.
 */
-INSERT #root_filter (FQON)
-VALUES ('[dbo].[TableFoo]'),('[dbo].[TableBar]');
+INSERT #root_filter (FQON) VALUES ('[dbo].[TableFoo]'), ('[dbo].[TableBar]');
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -62,11 +61,15 @@ FROM sys.foreign_keys fk
 ------------------------------------------------------------
 
 ------------------------------------------------------------
+DECLARE @has_filter bit = 0;
+
 DROP TABLE IF EXISTS #filter;
 CREATE TABLE #filter (FQON nvarchar(500) NOT NULL);
 
 IF EXISTS (SELECT * FROM #root_filter)
 BEGIN;
+    SET @has_filter = 1;
+
     WITH cte_referencing AS (
         SELECT DISTINCT RefLevel = 1, x.ParentFQON, Chain = CONVERT(nvarchar(MAX), NCHAR(9999)+x.ParentFQON+NCHAR(9999))
         FROM #fk x WHERE EXISTS (SELECT * FROM #root_filter rf WHERE rf.FQON = x.ParentFQON)
@@ -92,6 +95,7 @@ BEGIN;
         SELECT FQON = c.ReferencedFQON FROM cte_referenced c
     ) x
 END;
+
 ------------------------------------------------------------
 
 ------------------------------------------------------------
@@ -140,8 +144,14 @@ FROM (
         OUTER APPLY (SELECT ReferencedIsRootFilter = COUNT(*) FROM #root_filter rf WHERE rf.FQON = fk.ReferencedFQON) rrf
 ) x
 WHERE 1=1
-    AND EXISTS (SELECT * FROM #filter f WHERE f.FQON = x.ParentFQON)
-    AND (EXISTS (SELECT * FROM #filter f WHERE f.FQON = x.ReferencedFQON) OR x.ReferencedFQON IS NULL)
+    AND (
+        (
+            EXISTS (SELECT * FROM #filter f WHERE f.FQON = x.ParentFQON)
+            AND
+            (EXISTS (SELECT * FROM #filter f WHERE f.FQON = x.ReferencedFQON) OR x.ReferencedFQON IS NULL)
+        )
+        OR @has_filter = 0
+    )
 ORDER BY x.[Type] DESC, x.ParentFQON;
 ------------------------------------------------------------
 
