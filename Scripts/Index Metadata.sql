@@ -4,21 +4,6 @@ DECLARE @debug bit = 0;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-IF (@debug = 1)
-BEGIN;
-	DROP TABLE IF EXISTS #tmp_object;
-	DROP TABLE IF EXISTS #tmp_part;
-	DROP TABLE IF EXISTS #tmp_fk;
-	DROP TABLE IF EXISTS #tmp_idx_op_stat;
-	DROP TABLE IF EXISTS #tmp_idx_col_squash;
-END;
-------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------
-IF (@debug = 1) SET STATISTICS IO, TIME ON;
-------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------
 IF (@debug = 1) RAISERROR('Declare variables',0,1) WITH NOWAIT;
 DECLARE @LocalTZ            nvarchar(128),
         @CollectionTime     datetime2       = SYSUTCDATETIME(),
@@ -61,8 +46,19 @@ FROM msdb.dbo.restorehistory WHERE destination_database_name = DB_NAME();
 
 ------------------------------------------------------------------------------
 IF (@debug = 1) RAISERROR('Get base set of objects to pull',0,1) WITH NOWAIT;
-SELECT o.[schema_id], o.[object_id], o.[name], o.[type_desc], o.create_date
-INTO #tmp_object
+
+DROP TABLE IF EXISTS #tmp_object;
+CREATE TABLE #tmp_object (
+    [name]      nvarchar(128)   NOT NULL,
+    [object_id] int             NOT NULL,
+    [schema_id] int             NOT NULL,
+    [type_desc] nvarchar(60)    NOT NULL,
+    create_date datetime        NOT NULL,
+    PRIMARY KEY CLUSTERED ([object_id])
+);
+
+INSERT #tmp_object
+SELECT o.[name], o.[object_id], o.[schema_id], o.[type_desc], o.create_date
 FROM sys.objects o
 WHERE o.[type] IN ('U','V')
     -- Exclude SQL Server system objects
@@ -80,35 +76,169 @@ WHERE o.[type] IN ('U','V')
 
 ------------------------------------------------------------------------------
 IF (@debug = 1) RAISERROR('Get sys.dm_db_partition_stats',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_part;
+CREATE TABLE #tmp_part (
+    [object_id]             int             NOT NULL,
+    index_id                int             NOT NULL,
+    EstimatedIndexSizeKB    bigint          NOT NULL,
+    IndexRowCount           bigint          NOT NULL,
+    CompressionType         nvarchar(60)    NOT NULL,
+    PartitionCount          int             NOT NULL,
+    PRIMARY KEY CLUSTERED ([object_id], index_id)
+);
+
 /* Table is aggregated in order to rollup partitions */
 /* Returns rows for all indexes where is_disabled = 0 */
+INSERT #tmp_part
 SELECT s.[object_id], s.index_id
     , EstimatedIndexSizeKB  = SUM(s.used_page_count) * 8 /* would probably be easier to store value directly, but KB is more human to read */
     , IndexRowCount         = SUM(s.row_count)
-    , CompressionType       = MAX(p.data_compression_desc COLLATE DATABASE_DEFAULT) /* Technically not accurate for partitioned indexes since each partition can have different compression types */
+    , CompressionType       = IIF(COUNT(DISTINCT p.data_compression_desc) > 1, '<<MIXED>>', MAX(p.data_compression_desc COLLATE DATABASE_DEFAULT)) /* Technically not accurate for partitioned indexes since each partition can have different compression types */
     , PartitionCount        = COUNT(*)
-INTO #tmp_part
-FROM sys.dm_db_partition_stats s
-    JOIN sys.partitions p ON p.[object_id] = s.[object_id] AND p.index_id = s.index_id AND p.partition_number = s.partition_number
+FROM sys.partitions p
+    JOIN sys.dm_db_partition_stats s ON s.[partition_id] = p.[partition_id]
 WHERE EXISTS (SELECT * FROM #tmp_object o WHERE o.[object_id] = s.[object_id])
-GROUP BY s.[object_id], s.index_id
+GROUP BY s.[object_id], s.index_id;
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+IF (@debug = 1) RAISERROR('Get sys.indexes',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_indexes;
+CREATE TABLE #tmp_indexes (
+    [object_id]          int           NOT NULL,
+    [name]               nvarchar(128)     NULL,
+    index_id             int           NOT NULL,
+    [type_desc]          nvarchar(60)  NOT NULL,
+    is_unique            bit           NOT NULL,
+    data_space_id        int           NOT NULL,
+    [ignore_dup_key]     bit           NOT NULL,
+    is_primary_key       bit           NOT NULL,
+    is_unique_constraint bit           NOT NULL,
+    fill_factor          tinyint       NOT NULL,
+    is_padded            bit           NOT NULL,
+    is_disabled          bit           NOT NULL,
+    is_hypothetical      bit           NOT NULL,
+    [allow_row_locks]    bit           NOT NULL,
+    [allow_page_locks]   bit           NOT NULL,
+    has_filter           bit           NOT NULL,
+    filter_definition    nvarchar(max) NULL,
+    PRIMARY KEY CLUSTERED ([object_id], index_id)
+);
+
+INSERT #tmp_indexes
+SELECT i.[object_id]
+    , i.[name]
+    , i.index_id
+--  , i.[type]
+    , i.[type_desc]
+    , i.is_unique
+    , i.data_space_id
+    , i.[ignore_dup_key]
+    , i.is_primary_key
+    , i.is_unique_constraint
+    , i.fill_factor
+    , i.is_padded
+    , i.is_disabled
+    , i.is_hypothetical
+--  , i.is_ignored_in_optimization /* Undocumented column */
+    , i.[allow_row_locks]
+    , i.[allow_page_locks]
+    , i.has_filter
+    , i.filter_definition
+--  , i.[compression_delay]
+--  , i.suppress_dup_key_messages
+--  , i.auto_created
+--  , i.[optimize_for_sequential_key]
+FROM sys.indexes i
+WHERE EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = i.[object_id] AND p.index_id = i.index_id);
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+IF (@debug = 1) RAISERROR('Get sys.stats',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_stats;
+CREATE TABLE #tmp_stats (
+    [object_id]		int	NOT NULL,
+    stats_id		int	NOT NULL,
+    no_recompute	bit	NOT NULL,
+    is_incremental	bit	NOT NULL,
+    PRIMARY KEY CLUSTERED ([object_id], stats_id)
+);
+
+INSERT #tmp_stats
+SELECT s.[object_id]
+--  , s.[name]
+    , s.stats_id
+--  , s.auto_created
+--  , s.user_created
+    , s.no_recompute
+--  , s.has_filter
+--  , s.filter_definition
+--  , s.is_temporary
+    , s.is_incremental
+--  , s.has_persisted_sample
+--  , s.stats_generation_method
+--  , s.stats_generation_method_desc
+--  , s.auto_drop
+FROM sys.stats s
+WHERE EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = s.[object_id] AND p.index_id = s.stats_id);
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
 IF (@debug = 1) RAISERROR('Get foreign key counts',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_fk;
+CREATE TABLE #tmp_fk (
+    [object_id]         int NOT NULL,
+    index_id            int NOT NULL,
+    FKReferenceCount    int NOT NULL,
+    PRIMARY KEY CLUSTERED ([object_id], index_id)
+);
+
 /* FKs dont have to reference a PK, they can reference any unique index */
+INSERT #tmp_fk ([object_id], index_id, FKReferenceCount)
 SELECT [object_id]          = fk.referenced_object_id
     , index_id              = fk.key_index_id
     , FKReferenceCount      = COUNT(*)
-INTO #tmp_fk
 FROM sys.foreign_keys fk
 WHERE EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = fk.referenced_object_id AND p.index_id = fk.key_index_id)
 GROUP BY fk.referenced_object_id, fk.key_index_id;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-IF (@debug = 1) RAISERROR('Get sys.dm_db_index_operational_stats',0,1) WITH NOWAIT;
+IF (@debug =1) RAISERROR('Get sys.dm_db_index_operational_stats',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_idx_op_stat;
+CREATE TABLE #tmp_idx_op_stat (
+    [object_id]                        int    NOT NULL,
+    index_id                           int    NOT NULL,
+    leaf_insert_count                  bigint NOT NULL,
+    leaf_delete_count                  bigint NOT NULL,
+    leaf_update_count                  bigint NOT NULL,
+    leaf_allocation_count              bigint NOT NULL,
+    leaf_page_merge_count              bigint NOT NULL,
+    range_scan_count                   bigint NOT NULL,
+    singleton_lookup_count             bigint NOT NULL,
+    forwarded_fetch_count              bigint NOT NULL,
+    row_lock_count                     bigint NOT NULL,
+    row_lock_wait_count                bigint NOT NULL,
+    row_lock_wait_in_ms                bigint NOT NULL,
+    page_lock_count                    bigint NOT NULL,
+    page_lock_wait_count               bigint NOT NULL,
+    page_lock_wait_in_ms               bigint NOT NULL,
+    index_lock_promotion_attempt_count bigint NOT NULL,
+    index_lock_promotion_count         bigint NOT NULL,
+    page_latch_wait_count              bigint NOT NULL,
+    page_latch_wait_in_ms              bigint NOT NULL,
+    page_io_latch_wait_count           bigint NOT NULL,
+    page_io_latch_wait_in_ms           bigint NOT NULL,
+    PRIMARY KEY CLUSTERED ([object_id], index_id)
+);
+
 /* Table is aggregated in order to rollup partitions */
+INSERT #tmp_idx_op_stat
 SELECT x.[object_id], x.index_id
     , leaf_insert_count                  = SUM(x.leaf_insert_count)
     , leaf_delete_count                  = SUM(x.leaf_delete_count)
@@ -117,13 +247,13 @@ SELECT x.[object_id], x.index_id
 --  , nonleaf_insert_count               = SUM(x.nonleaf_insert_count)
 --  , nonleaf_delete_count               = SUM(x.nonleaf_delete_count)
 --  , nonleaf_update_count               = SUM(x.nonleaf_update_count)
---  , leaf_allocation_count              = SUM(x.leaf_allocation_count)
+    , leaf_allocation_count              = SUM(x.leaf_allocation_count)
 --  , nonleaf_allocation_count           = SUM(x.nonleaf_allocation_count)
     , leaf_page_merge_count              = SUM(x.leaf_page_merge_count)
 --  , nonleaf_page_merge_count           = SUM(x.nonleaf_page_merge_count)
     , range_scan_count                   = SUM(x.range_scan_count)
     , singleton_lookup_count             = SUM(x.singleton_lookup_count)
---  , forwarded_fetch_count              = SUM(x.forwarded_fetch_count)
+    , forwarded_fetch_count              = SUM(x.forwarded_fetch_count)
 --  , lob_fetch_in_pages                 = SUM(x.lob_fetch_in_pages)
 --  , lob_fetch_in_bytes                 = SUM(x.lob_fetch_in_bytes)
 --  , lob_orphan_create_count            = SUM(x.lob_orphan_create_count)
@@ -150,7 +280,6 @@ SELECT x.[object_id], x.index_id
 --  , tree_page_io_latch_wait_in_ms      = SUM(x.tree_page_io_latch_wait_in_ms)
 --  , page_compression_attempt_count     = SUM(x.page_compression_attempt_count)
 --  , page_compression_success_count     = SUM(x.page_compression_success_count)
-INTO #tmp_idx_op_stat
 FROM sys.dm_db_index_operational_stats(DB_ID(), NULL, NULL, NULL) x
 WHERE EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = x.[object_id] AND p.index_id = x.index_id)
 GROUP BY x.database_id, x.[object_id], x.index_id;
@@ -158,10 +287,20 @@ GROUP BY x.database_id, x.[object_id], x.index_id;
 
 ------------------------------------------------------------------------------
 IF (@debug = 1) RAISERROR('Get sys.index_columns',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_idx_col_squash;
+CREATE TABLE #tmp_idx_col_squash (
+    [object_id] int             NOT NULL,
+    index_id    int             NOT NULL,
+    KeyCols     nvarchar(4000)  NOT NULL,
+    InclCols    nvarchar(4000)      NULL,
+    PRIMARY KEY CLUSTERED ([object_id], index_id)
+);
+
+INSERT #tmp_idx_col_squash
 SELECT ic.[object_id], ic.index_id 
     , KeyCols  = STRING_AGG(x.KeyColName , ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, c.[name])
     , InclCols = STRING_AGG(x.InclColName, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal, c.[name])
-INTO #tmp_idx_col_squash
 FROM sys.index_columns ic
     JOIN sys.columns c ON c.[object_id] = ic.[object_id] AND c.column_id = ic.column_id
     CROSS APPLY (
@@ -170,6 +309,33 @@ FROM sys.index_columns ic
     ) x
 WHERE EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = ic.[object_id] AND p.index_id = ic.index_id)
 GROUP BY ic.[object_id], ic.index_id;
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+IF (@debug = 1) RAISERROR('Get sys.dm_db_index_usage_stats',0,1) WITH NOWAIT;
+
+DROP TABLE IF EXISTS #tmp_dm_db_index_usage_stats;
+CREATE TABLE #tmp_dm_db_index_usage_stats (
+    [object_id]         int         NOT NULL,
+    index_id            int         NOT NULL,
+    user_seeks          bigint      NOT NULL,
+    user_scans          bigint      NOT NULL,
+    user_lookups        bigint      NOT NULL,
+    user_updates        bigint      NOT NULL,
+    last_user_seek      datetime        NULL,
+    last_user_scan      datetime        NULL,
+    last_user_lookup    datetime        NULL,
+    last_user_update    datetime        NULL,
+    PRIMARY KEY CLUSTERED ([object_id], index_id)
+);
+
+INSERT #tmp_dm_db_index_usage_stats
+SELECT ius.[object_id], ius.index_id
+    , user_seeks, user_scans, user_lookups, user_updates
+    , ius.last_user_seek, ius.last_user_scan, ius.last_user_lookup, ius.last_user_update
+FROM sys.dm_db_index_usage_stats ius
+WHERE ius.database_id = DB_ID()
+    AND EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = ius.[object_id] AND p.index_id = ius.index_id);
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -218,19 +384,20 @@ SELECT i.[object_id], i.index_id
     , StatNoRecompute           = CONVERT(bit, COALESCE(s.no_recompute, 0))
     , StatIsIncremental         = CONVERT(bit, COALESCE(s.is_incremental, 0))
 
-    /*  For some reason joining to sys.filegroups causes this to take 4x as long to run. 
-        Even reading sys.filegroups into a temp table and playing with join hints did nothing. */
-    , IndexFileGroupName        = FILEGROUP_NAME(i.data_space_id)
-    , IndexFileGroupIsDefault   = FILEGROUPPROPERTY(FILEGROUP_NAME(i.data_space_id), 'IsDefault')
+    , IndexDataSpaceName        = ds.[name]
+    , IndexDataSpaceIsDefault   = ds.is_default
+    , IndexDataSpaceType        = ds.[type_desc]
 
     , HasFKReferences           = CONVERT(bit, IIF(fkc.FKReferenceCount > 0, 1, 0))
     , FKReferenceCount          = COALESCE(fkc.FKReferenceCount, 0)
     , CompressionType           = ixs.CompressionType /* Disabled indexes have NULL compression type */
+    , PartitionCount            = ixs.PartitionCount
     , StatsAgeMS                = DATEDIFF_BIG(MILLISECOND, r.BeginDate, @CollectionTime)
+
     , x.SeekCount, x.ScanCount, x.LookupCount, x.UpdateCount, x.ReadCount
 
     /* Stats from: sys.dm_db_index_operational_stats */
-    , x.LeafInsertCount, x.LeafDeleteCount, x.LeafUpdateCount, x.LeafPageMergeCount, x.RangeScanCount, x.SingletonLookupCount
+    , x.LeafInsertCount, x.LeafDeleteCount, x.LeafUpdateCount, x.LeafAllocationCount, x.LeafPageMergeCount, x.RangeScanCount, x.SingletonLookupCount, x.ForwardedFetchCount
     , x.RowLockCount, x.RowLockWaitCount, x.RowLockWaitInMS
     , x.PageLockCount, x.PageLockWaitCount, x.PageLockWaitInMS
     , x.TotalLockWaitInMS
@@ -240,15 +407,20 @@ SELECT i.[object_id], i.index_id
 
     , tz.LastSeek, tz.LastScan, tz.LastLookup, tz.LastUpdate, l.LastRead, tz.StatsDate
     , x.EstimatedIndexSizeKB, x.IndexRowCount
-FROM sys.indexes i
+FROM #tmp_indexes i
+    JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
     JOIN #tmp_object o ON o.[object_id] = i.[object_id]
-    LEFT JOIN sys.stats s ON s.[object_id] = i.[object_id] AND s.stats_id = i.index_id
-    LEFT JOIN #tmp_part ixs ON ixs.[object_id] = i.[object_id] AND ixs.index_id = i.index_id
-    LEFT JOIN sys.dm_db_index_usage_stats ius ON ius.database_id = DB_ID() AND ius.[object_id] = i.[object_id] AND ius.index_id = i.index_id
-    LEFT JOIN #tmp_fk fkc ON fkc.[object_id] = i.[object_id] AND fkc.index_id = i.index_id
+    JOIN #tmp_part ixs ON ixs.[object_id] = i.[object_id] AND ixs.index_id = i.index_id
+
+    -- Yes, all of these need to be left joins for various reasons - heaps, disabled indexes, no constraints, etc
+    LEFT JOIN #tmp_stats s ON s.[object_id] = i.[object_id] AND s.stats_id = i.index_id
+    LEFT JOIN #tmp_dm_db_index_usage_stats ius ON ius.[object_id] = i.[object_id] AND ius.index_id = i.index_id
     LEFT JOIN sys.key_constraints kc ON kc.parent_object_id = i.[object_id] AND kc.unique_index_id = i.index_id
+    LEFT JOIN #tmp_fk fkc ON fkc.[object_id] = i.[object_id] AND fkc.index_id = i.index_id
     LEFT JOIN #tmp_idx_op_stat os ON os.[object_id] = i.[object_id] AND os.index_id = i.index_id
     LEFT JOIN #tmp_idx_col_squash cs ON cs.[object_id] = i.[object_id] AND cs.index_id = i.index_id
+
+    -- Handle NULLs
     CROSS APPLY (
         SELECT SeekCount                      = COALESCE(ius.user_seeks, 0)
             ,  ScanCount                      = COALESCE(ius.user_scans, 0)
@@ -259,9 +431,11 @@ FROM sys.indexes i
             ,  LeafInsertCount                = COALESCE(os.leaf_insert_count, 0)
             ,  LeafDeleteCount                = COALESCE(os.leaf_delete_count, 0)
             ,  LeafUpdateCount                = COALESCE(os.leaf_update_count, 0)
+            ,  LeafAllocationCount            = COALESCE(os.leaf_allocation_count, 0)
             ,  LeafPageMergeCount             = COALESCE(os.leaf_page_merge_count, 0)
             ,  RangeScanCount                 = COALESCE(os.range_scan_count, 0)
             ,  SingletonLookupCount           = COALESCE(os.singleton_lookup_count, 0)
+            ,  ForwardedFetchCount            = COALESCE(os.forwarded_fetch_count, 0)
 
             ,  RowLockCount                   = COALESCE(os.row_lock_count, 0)
             ,  RowLockWaitCount               = COALESCE(os.row_lock_wait_count, 0)
@@ -285,6 +459,7 @@ FROM sys.indexes i
             ,  EstimatedIndexSizeKB           = COALESCE(ixs.EstimatedIndexSizeKB, 0) /* Disabled indexes have NULL size */
             ,  IndexRowCount                  = COALESCE(ixs.IndexRowCount, 0)        /* Disabled indexes have NULL row count */
     ) x
+    -- Handle time zone conversions
     CROSS APPLY (
         /*  Unfortunately, SQL Server stores everything using system time, rather than UTC. Need to convert to UTC for historical storage */
         /*  First set the values to the local time zone (no shift), then convert to UTC (with shift) */
@@ -311,4 +486,3 @@ WHERE EXISTS (SELECT * FROM #tmp_part p WHERE p.[object_id] = i.[object_id] AND 
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-IF (@debug = 1) SET STATISTICS IO, TIME OFF;
