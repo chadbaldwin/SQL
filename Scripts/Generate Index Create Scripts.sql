@@ -28,13 +28,15 @@ DROP TABLE IF EXISTS #cols;
 GO
 ------------------------------------------------------------------------------
 -- Options
-DECLARE @ScriptExistsCheck bit     = 0,
-        @EnableOnline      bit     = 1, --IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
-        @BatchSeparator    bit     = 0,
-        @FormatSQL         bit     = 0,
-        @TrailingLineBreak bit     = 0,
-        @AddOutputMessages bit     = 0,
-        @MAXDOP            tinyint = 0; -- 0 = Default
+DECLARE @ScriptExistsCheck bit           = 0,
+        @EnableOnline      bit           = 1, --IIF(SERVERPROPERTY('EngineEdition') = 3, 1, 0),
+        @BatchSeparator    bit           = 0,
+        @FormatSQL         bit           = 0,
+        @TrailingLineBreak bit           = 0,
+        @AddOutputMessages bit           = 0,
+        @MAXDOP            tinyint       = 0, -- 0 = Default
+        @IndexNameFilter   nvarchar(128) = '',
+        @ObjectNameFilter  nvarchar(128) = '';
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -63,7 +65,8 @@ FROM sys.index_columns ic
 GROUP BY ic.[object_id], ic.index_id;
 
 --DROP TABLE IF EXISTS #indexes; --SELECT * FROM #indexes;
-SELECT SchemaName           = s.[name]
+SELECT s.[schema_id], o.[object_id], i.index_id
+    , SchemaName           = s.[name]
     , ObjectName            = o.[name]
     , IndexName             = i.[name]
     , FQIN                  = x.FQIN
@@ -103,7 +106,10 @@ WHERE i.[type] IN (1,2) -- Limited to only clustered/non-clustered rowstore inde
     AND o.[type] IN ('U','V') -- Tables and views only - exclude functions/table types
     AND o.is_ms_shipped = 0
     -- Support limitations -->
-    AND fg.[type] = 'FG'; -- FD (FILESTREAM), FX (Memory-Optimized), PS (Partition Scheme), etc - not supported
+    AND fg.[type] = 'FG' -- FD (FILESTREAM), FX (Memory-Optimized), PS (Partition Scheme), etc - not supported
+    AND (i.[name] LIKE @IndexNameFilter OR NULLIF(@IndexNameFilter,'') IS NULL)
+    AND (o.[name] LIKE @ObjectNameFilter OR NULLIF(@ObjectNameFilter,'') IS NULL)
+OPTION(RECOMPILE);
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
@@ -115,7 +121,8 @@ DECLARE @SqlDrop     nvarchar(4000) = 'DROP INDEX IF EXISTS {{Index}} ON {{Schem
 
 RAISERROR('Assemble the command text',0,1) WITH NOWAIT;
 --DROP TABLE IF EXISTS #output; --SELECT * FROM #output;
-SELECT i.SchemaName, i.ObjectName, i.IndexName
+SELECT i.[schema_id], i.[object_id], i.index_id
+    , i.SchemaName, i.ObjectName, i.IndexName
     , i.ObjectTypeCode, i.IndexType
     , i.IsUnique, i.IgnoreDupKey, i.IsPrimaryKey, i.IsUniqueConstraint, i.[FillFactor], i.IsPadded, i.IsDisabled, i.AllowRowLocks, i.AllowPageLocks, i.HasFilter, i.FilterDefinition
     , i.StatNoRecompute, i.StatIsIncremental, i.DataCompressionType
@@ -277,8 +284,7 @@ END;
 RAISERROR('Output',0,1) WITH NOWAIT;
 SELECT *
 FROM #output i
-ORDER BY i.SchemaName, i.ObjectName, i.IndexName;
+ORDER BY i.SchemaName, i.ObjectName, i.KeyCols, i.IndexName;
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-
