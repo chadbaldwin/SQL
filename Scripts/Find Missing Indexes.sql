@@ -160,7 +160,7 @@ FROM #mid mid
 
 ------------------------------------------------------------
 -- Yes it's ugly, if you don't like it, build a UI for it 😅
-SELECT IndexGroupHandle, SchemaName, ObjectName, ObjectType
+SELECT IndexGroupHandle, IndexHandle, SchemaName, ObjectName, ObjectType
 	, N'█' [█]
 		, ObjectRowCount= RIGHT(SPACE(50)+FORMAT(ObjectRowCount		,'N0'), GREATEST(LEN('ObjectRowCount')		, MAX(LEN(FORMAT(ObjectRowCount		,'N0'))) OVER ()))
 		, ObjNCIdxCount
@@ -187,10 +187,5 @@ ORDER BY Ranking DESC;
 ------------------------------------------------------------
 
 ------------------------------------------------------------
-RETURN;
 
-SELECT q.group_handle, q.user_seeks, q.user_scans, q.last_user_seek, q.last_user_scan, q.avg_total_user_cost, q.avg_user_impact
-	, q.[database_name], q.[schema_name], q.[object_name], q.batch_text, q.query_text
-FROM #migsq q
-WHERE q.group_handle = 223
-ORDER BY q.avg_total_user_cost DESC;
+RETURN;
