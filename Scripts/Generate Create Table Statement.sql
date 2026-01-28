@@ -34,17 +34,20 @@ SELECT @output = (
 			, MaxColNameLen = MAX(LEN(y.ColName)) OVER () + (4-(MAX(LEN(y.ColName)) OVER () % 4))
 			, MaxTypeNameLen = MAX(LEN(dt.TypeName)) OVER () + (4-(MAX(LEN(dt.TypeName)) OVER () % 4))
 		FROM sys.dm_exec_describe_first_result_set(@sql, NULL, 1) x
+			CROSS APPLY (SELECT [type_name] = TYPE_NAME(x.system_type_id)) n
 			CROSS APPLY (
-				SELECT TypeName = CONCAT(x.system_type_name
-						,	CASE
-								WHEN x.system_type_name IN ('datetime2', 'time')	THEN IIF(x.scale = 7, NULL, CONCAT('(', x.scale, ')')) --scale of (7) is the default so it can be ignored, (0) is a valid value
-								WHEN x.system_type_name IN ('datetimeoffset')		THEN CONCAT('(', x.scale, ')')
-								WHEN x.system_type_name IN ('decimal', 'numeric')	THEN CONCAT('(', x.[precision], ',', x.scale,')')
-								WHEN x.system_type_name IN ('nchar', 'nvarchar')	THEN IIF(x.max_length = -1, '(MAX)', CONCAT('(', x.max_length/2, ')'))
-								WHEN x.system_type_name IN ('char', 'varchar')		THEN IIF(x.max_length = -1, '(MAX)', CONCAT('(', x.max_length, ')'))
-								WHEN x.system_type_name IN ('binary', 'varbinary')	THEN IIF(x.max_length = -1, '(MAX)', CONCAT('(', x.max_length, ')'))
-								ELSE NULL
-							END)
+				SELECT TypeName = CONCAT(n.[type_name]
+						,   CASE
+								WHEN n.[type_name] IN ('datetime2','time','datetimeoffset')   THEN IIF(x.scale = 7, NULL, CONCAT('(', x.scale, ')')) --scale of (7) is the default so it can be ignored; (0) is a valid value
+								WHEN n.[type_name] IN ('decimal','numeric')                   THEN CONCAT('(', x.[precision], ',', x.scale,')')
+								WHEN n.[type_name] IN ('nchar','nvarchar')                    THEN IIF(x.max_length = -1, '(MAX)', CONCAT('(', x.max_length/2, ')'))
+								WHEN n.[type_name] IN ('char','varchar','binary','varbinary') THEN IIF(x.max_length = -1, '(MAX)', CONCAT('(', x.max_length, ')'))
+								-- Including for the sake of clarity so I know they've been covered
+								WHEN n.[type_name] IN ('real','float')                        THEN NULL -- real and float are odd because float(1-24) = real(24); float(25-53) = float(53); real(N) = real(24); so we can just pass these through with no extra info
+								WHEN n.[type_name] IN ('bit','tinyint','smallint','int','bigint','money','date','datetime','smalldatetime','geometry','sql_variant','uniqueidentifier','xml','hierarchyid','image','text','ntext','timestamp') THEN NULL
+								ELSE '{{UNRECOGNIZED}}'
+							END
+					)
 			) dt
 			CROSS APPLY (
 				SELECT ColName = IIF(x.[name] IN ( -- Add sqare brackets only to reserved keywords or names containing unescaped characters
