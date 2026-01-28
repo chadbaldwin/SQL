@@ -1,3 +1,12 @@
+/* TODO:
+   - Option to only display upstream/downstream/both for root filters?
+   - Option to only display chains that begin/end with a root filter object?
+   - Option to only display chains that contain ALL root filters?
+   - Option to only diplsay chains that contain at least 1 root filter?
+*/
+------------------------------------------------------------
+
+------------------------------------------------------------
 DROP TABLE IF EXISTS #root_filter;
 CREATE TABLE #root_filter (
     FQON nvarchar(500) NOT NULL,
@@ -5,23 +14,24 @@ CREATE TABLE #root_filter (
 ------------------------------------------------------------
 
 ------------------------------------------------------------
-/*  Root filters, must be specified as a fully qualified object name (FQON)
+/*  Root filters are OPTIONAL. If supplied they must be specified as a fully qualified object name (FQON)
 
-    This will ensure that all relationships returned tie back to these objects at some point in the chain.
+    Root filters ensure that all relationships returned tie back to at least one root filter object at some point in its dependency tree (bi-directional).
 
-    This is helpful for very large databases with complex schemas where you only want to view parents and children
-    of a specific set of tables.
+    This is helpful for very large databases with complex schemas where you only want to view depdendency trees for a specific set of tables.
 
-    This only acts as a filter on nodes, not edges. If there are any objects (nodes which have FKs (edges) to other objects within
-    the chain, those edges will still appear.
+    This only acts as a filter on objects, not foreign keys. If there are any objects which have FKs to other objects within the chain, those relationships will still appear.
 
-    Edges in red signify a direct link between root filter objects
-    Edges in green signify a direct link to any root filter object from any other object
-    Edges in blue signify self referencing relationships for any object.
-
-    Root filter objects will be highlighted in red.
+    Color key:
+    - Edges in red signify a direct link between two root filter objects
+    - Edges in green signify a direct link between any root filter object and any non-root filter object
+    - Edges in blue signify self referencing relationships on any object
+    - Root filter objects will be highlighted in red
 */
-INSERT #root_filter (FQON) VALUES ('[dbo].[TableFoo]'), ('[dbo].[TableBar]');
+
+/* OPTIONAL - uncomment and fill in to apply filter */
+
+--INSERT #root_filter (FQON) VALUES ('[dbo].[TableFoo]'), ('[dbo].[TableBar]');
 ------------------------------------------------------------
 
 ------------------------------------------------------------
