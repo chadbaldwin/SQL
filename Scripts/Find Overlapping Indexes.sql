@@ -1,4 +1,4 @@
-------------------------------------------------------------------------------
+﻿------------------------------------------------------------------------------
 -- Notes / Documentation
 ------------------------------------------------------------------------------
 /*
@@ -178,7 +178,8 @@
                             WHEN TYPE_NAME(c.system_type_id) IN ('char', 'varchar')     THEN IIF(c.max_length = -1, '(MAX)', CONCAT('(', c.max_length, ')'))
                             WHEN TYPE_NAME(c.system_type_id) IN ('binary', 'varbinary') THEN IIF(c.max_length = -1, '(MAX)', CONCAT('(', c.max_length, ')'))
                             ELSE NULL
-                        END)
+                        END
+                )
         ) dt;
 
     UPDATE ic SET ic.is_clustering_key = 1
@@ -445,8 +446,6 @@
         to do is use that function and we have our answer...there's 2 extra colums in IndexB than there are in IndexA. This
         means there might be potential to merge the two indexes.
     */
-    DECLARE @Mergeable_ExtraColMax  tinyint = 3;
-
     -- Mergeable
     IF OBJECT_ID('tempdb..#idx_merge','U') IS NOT NULL DROP TABLE #idx_merge; --SELECT * FROM #idx_merge
     SELECT MergeIntoID = x.IndexID, MergeFromID = y.IndexID, y.ExtraColCount
@@ -475,7 +474,7 @@
                 AND ((x.is_unique = 1 AND x.PhysKeyColIDs = i.PhysKeyColIDs) OR (x.is_unique = 0 AND i.is_unique = 0 AND x.PhysKeyColIDs LIKE i.PhysKeyColIDs + '%'))
                 AND ((x.PhysKeyColIDs = i.PhysKeyColIDs AND x.PhysInclColIDs <> '') OR x.PhysKeyColIDs <> i.PhysKeyColIDs) /* Prevent some covering indexe matches from popping up */
                 --
-                AND (c.ExtraColCount >= 1 AND c.ExtraColCount <= @Mergeable_ExtraColMax) /*  Includes are off by small number */
+                AND c.ExtraColCount >= 1
         ) y;
 
     /*  If there are any duplicate entries, we want to pick the one which results in the least amount of columns being added. */
@@ -503,19 +502,22 @@
     FROM #idx_dupes id
         JOIN #idx i ON i.IndexID = id.IndexID
         JOIN #target_indexes ti ON ti.IndexID = i.IndexID
-    ORDER BY i.ObjectName, id.DupeGroupID, i.IndexType, i.is_unique DESC;
+    ORDER BY i.SchemaName, i.ObjectName, id.DupeGroupID, i.IndexType, i.is_unique DESC;
 
     -- Covered
     SELECT 'Covered indexes';
+    DECLARE @Covered_ColDiffMax int = 5;
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
         , N'█' [██], mi.IndexID, mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint
                    , mi.PhysKeyColIDs, mi.PhysInclColIDs
         --         , mi.OrigKeyColIDs, mi.OrigInclColIDs
                    , mi.ObjColCount, mi.CurrIdxColCount, x.ColDiffCount
-        , N'█ Covers --> █' [██], mf.IndexID, mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint
+                 , mi.FQIN
+        , N'█ Covers --> █' [██]
+                   , mf.IndexID, mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint
                    , mf.PhysKeyColIDs, mf.PhysInclColIDs
         --         , mf.OrigKeyColIDs, mf.OrigInclColIDs
-        --         , mf.FQIN
+                 , mf.FQIN
         , N'█' [██], [ExtraCols - {col_id}[column_name]] datatype] = ec.ExtraCols
     FROM #idx_cover o
         JOIN #idx mi ON mi.IndexID = o.MergeIntoID
@@ -524,17 +526,19 @@
         CROSS APPLY (SELECT ColDiffCount = mi.CurrIdxColCount - mf.CurrIdxColCount) x
     WHERE 1=1
         AND NOT EXISTS (SELECT * FROM #idx_cover c WHERE c.MergeFromID = o.MergeIntoID) -- Prevent hierarchies by excluding any parent indexes who also have parents
-        AND x.ColDiffCount <= 5 -- Exclude matches when the column difference is significant. If an index has 40 columns, and the matching index has 2, then it's unlikely a candidate to drop
+        AND x.ColDiffCount <= @Covered_ColDiffMax -- Exclude matches when the column difference is significant. If an index has 40 columns, and the matching index has 2, then it's unlikely a candidate to drop
     ORDER BY mi.SchemaName, mi.ObjectName, mi.filter_definition, mi.IndexName, mf.IndexName;
 
     -- Mergeable
     SELECT 'Mergeable indexes';
+    DECLARE @Mergeable_ExtraColMax  tinyint = 5;
     SELECT mi.SchemaName, mi.ObjectName, mi.ObjectType, mi.filter_definition
         , N'█' [██], mi.IndexName, mi.IndexType, mi.is_unique, mi.is_primary_key, mi.is_unique_constraint, mi.PhysKeyColIDs, mi.PhysInclColIDs
         , N'█ Can merge with --> █' [██], mf.IndexName, mf.IndexType, mf.is_unique, mf.is_primary_key, mf.is_unique_constraint, mf.PhysKeyColIDs, mf.PhysInclColIDs, m.ExtraColCount
     FROM #idx_merge m
         JOIN #idx mi ON mi.IndexID = m.MergeIntoID
         JOIN #idx mf ON mf.IndexID = m.MergeFromID
+    WHERE m.ExtraColCount <= @Mergeable_ExtraColMax
     ORDER BY mi.SchemaName, mi.ObjectName, mi.filter_definition, mi.IndexName, mf.IndexName;
 ------------------------------------------------------------------------------
 
