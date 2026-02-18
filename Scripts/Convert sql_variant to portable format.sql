@@ -17,7 +17,7 @@ SELECT x.*, v.*
         WHEN v.BaseType = 'varbinary'             THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), x.[value]), 1)
         WHEN v.BaseType = 'binary'                THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), LEFT(CONVERT(varbinary(MAX), x.[value]), v.[MaxLength])), 1)
         WHEN v.BaseType IN ('money','smallmoney') THEN CONVERT(nvarchar(MAX), CONVERT(money, x.[value]), 2)
-        ELSE CONVERT(nvarchar(MAX), [value]) -- Tested OK: bigint, int, smallint, tinyint, bit, decimal, numeric, char, nchar, varchar, nvarchar, xml, uniqueidentifier
+        ELSE CONVERT(nvarchar(MAX), x.[value]) -- Tested OK: bigint, int, smallint, tinyint, bit, decimal, numeric, char, nchar, varchar, nvarchar, xml, uniqueidentifier
       END
 FROM (
               SELECT DT = 'bigint'           , [value] = CONVERT(sql_variant, CONVERT(bigint           , 1234567891011))
@@ -49,9 +49,9 @@ FROM (
 ) x
     CROSS APPLY (
         SELECT BaseType   = CONVERT(nvarchar(128), SQL_VARIANT_PROPERTY(x.[value], 'BaseType'))
-            , [Precision] = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'Precision'))
-            , Scale       = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'Scale'))
-            , TotalBytes  = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'TotalBytes'))
+            , [Precision] = CONVERT(int          , SQL_VARIANT_PROPERTY(x.[value], 'Precision'))
+            , Scale       = CONVERT(int          , SQL_VARIANT_PROPERTY(x.[value], 'Scale'))
+            , TotalBytes  = CONVERT(int          , SQL_VARIANT_PROPERTY(x.[value], 'TotalBytes'))
             , Collation   = CONVERT(nvarchar(128), SQL_VARIANT_PROPERTY(x.[value], 'Collation'))
-            , [MaxLength] = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'MaxLength'))
+            , [MaxLength] = CONVERT(int          , SQL_VARIANT_PROPERTY(x.[value], 'MaxLength'))
     ) v
