@@ -7,16 +7,16 @@
 */
 SELECT x.*, v.*
     , CASE 
-        WHEN v.BaseType = 'date'                  THEN FORMAT(CONVERT(date, [value]), 'yyyy-MM-dd')
-        WHEN v.BaseType = 'datetime'              THEN FORMAT(CONVERT(datetime, [value]), 'yyyy-MM-dd HH:mm:ss.fff')
-        WHEN v.BaseType = 'smalldatetime'         THEN FORMAT(CONVERT(smalldatetime, [value]), 'yyyy-MM-dd HH:mm')
-        WHEN v.BaseType = 'datetime2'             THEN LEFT(FORMAT(CONVERT(datetime2, [value]), 'o'), v.[Precision])
-        WHEN v.BaseType = 'datetimeoffset'        THEN STUFF(FORMAT(CONVERT(datetimeoffset, [value]), 'o'), v.[Precision]-6, 34-v.[Precision], '')
-        WHEN v.BaseType = 'time'                  THEN LEFT(CONVERT(nvarchar(16), [value], 114), v.[Precision])
-        WHEN v.BaseType IN ('float','real')       THEN CONVERT(nvarchar(MAX), CONVERT(float, [value]), 3)
-        WHEN v.BaseType = 'varbinary'             THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), [value]), 1)
-        WHEN v.BaseType = 'binary'                THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), LEFT(CONVERT(varbinary(MAX), [value]), v.[MaxLength])), 1)
-        WHEN v.BaseType IN ('money','smallmoney') THEN CONVERT(nvarchar(MAX), CONVERT(money, [value]), 2)
+        WHEN v.BaseType = 'date'                  THEN FORMAT(CONVERT(date, x.[value]), 'yyyy-MM-dd')
+        WHEN v.BaseType = 'datetime'              THEN FORMAT(CONVERT(datetime, x.[value]), 'yyyy-MM-dd HH:mm:ss.fff')
+        WHEN v.BaseType = 'smalldatetime'         THEN FORMAT(CONVERT(smalldatetime, x.[value]), 'yyyy-MM-dd HH:mm')
+        WHEN v.BaseType = 'datetime2'             THEN LEFT(FORMAT(CONVERT(datetime2, x.[value]), 'o'), v.[Precision])
+        WHEN v.BaseType = 'datetimeoffset'        THEN STUFF(FORMAT(CONVERT(datetimeoffset, x.[value]), 'o'), v.[Precision]-6, 34-v.[Precision], '')
+        WHEN v.BaseType = 'time'                  THEN LEFT(CONVERT(nvarchar(16), x.[value], 114), v.[Precision])
+        WHEN v.BaseType IN ('float','real')       THEN CONVERT(nvarchar(MAX), CONVERT(float, x.[value]), 3)
+        WHEN v.BaseType = 'varbinary'             THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), x.[value]), 1)
+        WHEN v.BaseType = 'binary'                THEN CONVERT(nvarchar(MAX), CONVERT(varbinary(MAX), LEFT(CONVERT(varbinary(MAX), x.[value]), v.[MaxLength])), 1)
+        WHEN v.BaseType IN ('money','smallmoney') THEN CONVERT(nvarchar(MAX), CONVERT(money, x.[value]), 2)
         ELSE CONVERT(nvarchar(MAX), [value]) -- Tested OK: bigint, int, smallint, tinyint, bit, decimal, numeric, char, nchar, varchar, nvarchar, xml, uniqueidentifier
       END
 FROM (
@@ -48,10 +48,10 @@ FROM (
     UNION ALL SELECT DT = 'uniqueidentifier' , [value] = CONVERT(sql_variant, CONVERT(uniqueidentifier , NEWID()))
 ) x
     CROSS APPLY (
-        SELECT BaseType   = CONVERT(nvarchar(128), SQL_VARIANT_PROPERTY([value], 'BaseType'))
-            , [Precision] = CONVERT(int, SQL_VARIANT_PROPERTY([value], 'Precision'))
-            , Scale       = CONVERT(int, SQL_VARIANT_PROPERTY([value], 'Scale'))
-            , TotalBytes  = CONVERT(int, SQL_VARIANT_PROPERTY([value], 'TotalBytes'))
-            , Collation   = CONVERT(nvarchar(128), SQL_VARIANT_PROPERTY([value], 'Collation'))
-            , [MaxLength] = CONVERT(int, SQL_VARIANT_PROPERTY([value], 'MaxLength'))
+        SELECT BaseType   = CONVERT(nvarchar(128), SQL_VARIANT_PROPERTY(x.[value], 'BaseType'))
+            , [Precision] = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'Precision'))
+            , Scale       = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'Scale'))
+            , TotalBytes  = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'TotalBytes'))
+            , Collation   = CONVERT(nvarchar(128), SQL_VARIANT_PROPERTY(x.[value], 'Collation'))
+            , [MaxLength] = CONVERT(int, SQL_VARIANT_PROPERTY(x.[value], 'MaxLength'))
     ) v
