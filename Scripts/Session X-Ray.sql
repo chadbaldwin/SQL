@@ -1237,7 +1237,7 @@ BEGIN;
 					, [off] = IIF(x.statement_start_offset = v.stmt_start AND x.statement_end_offset = v.stmt_end, N'☑️', '')
 					, N'▓' [▓]
 						, statement_text = (SELECT [processing-instruction(q)] = TRANSLATE(REPLACE('--' + crlf + stt.statement_text + crlf + '--', '?>', '??') COLLATE Latin1_General_BIN2, v.xml_bad, v.xml_replace) WHERE stt.statement_text IS NOT NULL FOR XML PATH(''), TYPE)
-						, avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MILLISECOND, x.total_elapsed_time/(x.execution_count*1.0), 0),'HH:mm:ss.fff')) -- TODO: Validate accuracy - Finding this to be inaccurate fairly often due to "incorrect" execution counts (too low)
+						, avg_elapsed_time = CONCAT(FORMAT(x.total_elapsed_time/x.execution_count/86400000000.0,'0#'), ' ', FORMAT(DATEADD(MICROSECOND, x.total_elapsed_time/x.execution_count, CONVERT(datetime2,'0001-01-01')),'HH:mm:ss.fff'))
 						, avg_grant_mb = CONVERT(decimal(15,3), x.total_grant_kb / x.execution_count / 1024.0)
 					, N'▓' [▓], x.[sql_handle], x.statement_start_offset, x.statement_end_offset, x.plan_generation_num, x.plan_handle, x.creation_time, x.last_execution_time, x.execution_count, x.query_hash, x.query_plan_hash, x.statement_sql_handle, x.statement_context_id
 					, N'▓ Worker Time (sec) ->' [▓]			, [total]	= RIGHT(SPACE(50)+FORMAT(x.total_worker_time	/ 1000000.0	, 'N2')	, MAX(LEN(FORMAT(x.total_worker_time	/ 1000000.0	, 'N2'))) OVER ())
